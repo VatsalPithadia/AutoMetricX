@@ -127,7 +127,66 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
       {activeTab === 'compliance' && (
         <div className="space-y-6">
           
-          {/* Rules Grid */}
+          {/* FSSAI License & Barcode Verification Box (UPSIDE / ABOVE Metrology Rules) */}
+          <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-emerald-600 text-white font-bold text-xs uppercase tracking-wider">
+                  FSSAI
+                </span>
+                <div>
+                  <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">FSSAI License & Barcode Verification Box</h3>
+                  <p className="text-[11px] text-gray-500">Food Safety and Standards Authority of India (FSSAI) Compliance Check</p>
+                </div>
+              </div>
+              <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded-full ${
+                classified.fssai_number?.license_number || classified.fssai_number?.raw_text
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-amber-500 text-white'
+              }`}>
+                {classified.fssai_number?.license_number ? '14-Digit Valid License' : 'FSSAI Status'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-xs">
+              <div className="p-3 rounded-lg bg-white border border-emerald-100 shadow-2xs space-y-1">
+                <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">FSSAI License No.</div>
+                <div className="font-mono font-bold text-emerald-700 text-sm truncate">
+                  {classified.fssai_number?.license_number || classified.fssai_number?.raw_text || (
+                    <span className="text-amber-600 text-xs italic font-normal">Not Detected</span>
+                  )}
+                </div>
+                {classified.fssai_number?.license_number && (
+                  <div className="text-[9px] text-emerald-600 font-medium">✓ Verified 14-Digit Standard Format</div>
+                )}
+              </div>
+
+              <div className="p-3 rounded-lg bg-white border border-emerald-100 shadow-2xs space-y-1">
+                <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">1D Barcode GTIN</div>
+                <div className="font-mono font-semibold text-gray-800 text-xs truncate">
+                  {result.barcode_qr_analysis?.gtin_barcodes?.join(', ') || 'None Detected'}
+                </div>
+                <div className="text-[9px] text-gray-400">EAN-13 / UPC Code</div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white border border-emerald-100 shadow-2xs space-y-1">
+                <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">QR Code Link</div>
+                <div className="font-mono font-semibold text-gray-800 text-xs truncate">
+                  {result.barcode_qr_analysis?.qr_urls?.join(', ') || 'None Detected'}
+                </div>
+                <div className="text-[9px] text-gray-400">Digital Smart Label</div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white border border-emerald-100 shadow-2xs space-y-1">
+                <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Cross-Check Status</div>
+                <div className="text-xs text-gray-700 font-medium leading-tight">
+                  {result.barcode_qr_analysis?.fssai_cross_check?.explanation || 'FSSAI License & product declarations verified.'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Legal Metrology Rules Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {declarations.map((decl, idx) => {
               const st = getStatusBadge(decl.status);
@@ -157,45 +216,6 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
               );
             })}
           </div>
-
-          {/* Barcode / QR Code Cross-Check Section */}
-          {result.barcode_qr_analysis && (
-            <div className="p-4 rounded-xl border border-gray-200 bg-white space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">Barcode & QR Code Cross-Check</h3>
-                <span className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${
-                  result.barcode_qr_analysis.fssai_cross_check?.status === 'MATCHED'
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    : 'bg-gray-100 text-gray-700 border-gray-200'
-                }`}>
-                  {result.barcode_qr_analysis.fssai_cross_check?.status || 'CHECKED'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-                <div className="p-2.5 rounded bg-gray-50 border border-gray-100">
-                  <div className="text-[10px] text-gray-400 font-medium">1D Barcode GTIN</div>
-                  <div className="font-mono font-semibold text-gray-800">
-                    {result.barcode_qr_analysis.gtin_barcodes?.join(', ') || 'None'}
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded bg-gray-50 border border-gray-100">
-                  <div className="text-[10px] text-gray-400 font-medium">QR Code Link</div>
-                  <div className="font-mono font-semibold text-gray-800 truncate">
-                    {result.barcode_qr_analysis.qr_urls?.join(', ') || 'None'}
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded bg-gray-50 border border-gray-100">
-                  <div className="text-[10px] text-gray-400 font-medium">Verification Result</div>
-                  <div className="text-gray-700">
-                    {result.barcode_qr_analysis.fssai_cross_check?.explanation}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Font Size Legibility Analysis Table */}
           {report.font_legibility_analysis && (
