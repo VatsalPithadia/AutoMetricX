@@ -71,11 +71,11 @@ class FieldClassifier:
         )
 
         self.net_qty_prefix_pattern = re.compile(
-            r'(?:NET\s*(?:QTY|QUANTITY|WT|WEIGHT|VOL|VOLUME)|NET|N\.W\.)\s*[:=.\s]*(\d+(?:\.\d+)?)\s*([a-zA-Z]+|Pcs|Units|N)',
+            r'(?:NET\s*(?:QTY|QUANTITY|WT|WEIGHT|VOL|VOLUME|CONTENTS|MASS)|TOTAL\s*NET\s*(?:WT|WEIGHT|QTY)|NET|N\.W\.)\s*[:=.\s]*(\d+(?:\.\d+)?)\s*([a-zA-Z]+|Pcs|Units)',
             re.IGNORECASE
         )
         self.standalone_qty_pattern = re.compile(
-            r'^\b(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|liter|litres|n|pcs|units)\b$',
+            r'^\b(?:NET\s*(?:WT|WEIGHT|QTY|QUANTITY)\s*[:=.\s]*)?(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|liter|litres|pcs|units)\b$',
             re.IGNORECASE
         )
 
@@ -289,31 +289,61 @@ class FieldClassifier:
                     claimed_block_ids.add(b_id)
                     break
 
-        # --- Pass 2: Net Quantity (Excluding Recipe Blocks & Implausible Quantities) ---
+        # --- Pass 2: Whole Packet Net Quantity (Scoring Engine for Packet Weight vs Ingredients) ---
+        net_qty_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
             if b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
             text = block.get("text", "").strip()
+            upper_text = text.upper()
+
+            # Hard exclusions: Skip ingredient breakdowns, nutrition facts, recipe steps, and batch/date stamps
+            if any(kw in upper_text for kw in ['INGREDIENT', 'INGREDIENTS', 'CONTAINS', 'PER SERVING', 'SERVING SIZE', 'NUTRITIONAL', 'PER 100G', 'PER 100ML', 'ADDED SUGAR', 'DAILY VALUE', '% RDA', 'CALORIES', 'FAT', 'PROTEIN']):
+                continue
+            if any(kw in upper_text for kw in ['PKD', 'MFG', 'EXP', 'BEST BEFORE', 'USE BY', 'BATCH', 'LOT', 'B.NO']):
+                continue
+            if re.search(r'\b(STEP\s*\d+|\d+\)\s*[A-Z]|TSP|TBSP|CUP)\b', upper_text):
+                continue
 
             parsed_qty = self._parse_net_quantity(text)
             if parsed_qty:
                 num_val, unit_str, is_standard = parsed_qty
-                # Higher confidence if preceded by explicit Net Qty prefix
-                has_prefix = bool(self.net_qty_prefix_pattern.search(text))
-                field_conf = block["confidence"] if has_prefix else min(block["confidence"], 0.55)
 
-                classified["net_quantity"] = {
-                    "raw_text": text,
-                    "numeric_value": num_val,
-                    "unit": unit_str,
-                    "is_standard_unit": is_standard,
-                    "confidence": field_conf,
-                    "bbox": block.get("bbox"),
-                    "rect": block.get("rect")
-                }
-                claimed_block_ids.add(b_id)
-                break
+                # Candidate Scoring System
+                score = block.get("confidence", 0.5) * 10.0
+                has_explicit_prefix = bool(self.net_qty_prefix_pattern.search(text))
+                
+                if has_explicit_prefix:
+                    score += 50.0
+                elif any(kw in upper_text for kw in ['NET', 'QTY', 'QUANTITY', 'WEIGHT', 'VOL', 'N.W.']):
+                    score += 30.0
+
+                if unit_str in ['g', 'kg', 'ml', 'L']:
+                    score += 15.0
+
+                if len(text) < 30:
+                    score += 10.0
+
+                net_qty_candidates.append((score, block, num_val, unit_str, is_standard, has_explicit_prefix))
+
+        if net_qty_candidates:
+            net_qty_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_block, num_val, unit_str, is_standard, has_prefix = net_qty_candidates[0]
+            b_id = best_block["id"]
+            text = best_block["text"].strip()
+            field_conf = best_block["confidence"] if has_prefix else min(best_block["confidence"], 0.75)
+
+            classified["net_quantity"] = {
+                "raw_text": text,
+                "numeric_value": num_val,
+                "unit": unit_str,
+                "is_standard_unit": is_standard,
+                "confidence": field_conf,
+                "bbox": best_block.get("bbox"),
+                "rect": best_block.get("rect")
+            }
+            claimed_block_ids.add(b_id)
 
         # --- Pass 3: MRP & Manufacturing / Expiry Date ---
         for block in valid_blocks:
@@ -367,10 +397,6 @@ class FieldClassifier:
             if b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
 
-            # Skip rotated vertical blocks and customer care blocks in manufacturer details
-            if block.get("angle", 0) != 0:
-                continue
-
             text = block.get("text", "").strip()
             upper_text = text.upper()
 
@@ -407,10 +433,6 @@ class FieldClassifier:
             if b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
 
-            # Skip rotated vertical blocks for consumer care
-            if block.get("angle", 0) != 0:
-                continue
-
             text = block.get("text", "").strip()
 
             # Reject standalone barcode/EAN numbers (11-15 digits without explicit phone prefix)
@@ -442,10 +464,6 @@ class FieldClassifier:
         for block in valid_blocks:
             b_id = block.get("id")
             if b_id in claimed_block_ids or b_id in recipe_block_ids:
-                continue
-
-            # Skip rotated vertical blocks for commodity name
-            if block.get("angle", 0) != 0:
                 continue
 
             text = block.get("text", "").strip()
@@ -498,6 +516,14 @@ class FieldClassifier:
         classified["unclassified_blocks_count"] = max(0, len(valid_blocks) - len(claimed_block_ids))
 
         # --- Pass 7: Gemini LLM Hybrid Second Opinion & Fallback ---
+        # Fast-Path LLM Skip: If deterministic regex rules found essential LMPC fields, skip network LLM call for high speed
+        found_fields = [k for k in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"] if classified.get(k) is not None]
+        has_critical_fields = bool(classified.get("mrp") or classified.get("net_quantity") or classified.get("commodity_name"))
+
+        if len(found_fields) >= 4 and has_critical_fields:
+            logger.info(f"Fast-path skip: Regex extracted {len(found_fields)}/8 fields successfully. Skipping LLM network call.")
+            return classified
+
         llm_extractions = self.llm_extractor.extract_fields_from_ocr(full_raw_str)
         if llm_extractions:
             field_mapping = {

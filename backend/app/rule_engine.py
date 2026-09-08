@@ -255,8 +255,8 @@ class LMPCRuleEngine:
         calibrator = FontCalibrator()
         
         # Default metadata fallback
-        meta_dummy = {"width": 1600, "height": 1200}
-        dummy_img = np.zeros((1200, 1600, 3), dtype=np.uint8) if 'np' in globals() else None
+        meta_dummy = {"width": 1200, "height": 900}
+        dummy_img = None
         
         legibility_analysis = calibrator.analyze_legibility_and_prominence(
             dummy_img, meta_dummy, classified_fields, ocr_blocks

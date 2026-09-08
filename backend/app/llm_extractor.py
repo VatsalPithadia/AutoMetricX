@@ -13,7 +13,7 @@ logger = logging.getLogger("metrolens.llm_extractor")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 class LLMExtractor:
-    def __init__(self, timeout_sec: float = 8.0):
+    def __init__(self, timeout_sec: float = 3.0):
         self.timeout_sec = timeout_sec
 
     def extract_fields_from_ocr(self, raw_ocr_text: str) -> Optional[Dict[str, Any]]:
@@ -32,7 +32,7 @@ The OCR text may contain errors, typos, or garbled text due to image quality, cu
 
 Extract the following mandatory fields if present:
 1. generic_commodity_name: string or null (e.g. "Spiced Masala Powder", "Eno Antacid")
-2. net_quantity: string or null (e.g. "50 g", "5 g", "100 ml")
+2. net_quantity: string or null (MUST be the total net weight/volume of the WHOLE PACKET e.g. "50 g", "120 g", "250 g", "1 L". DO NOT extract individual ingredient weights e.g. "5g sugar in ingredients", serving sizes e.g. "per 100g", or batch fragments)
 3. mrp: string or null (e.g. "Rs. 23.00 (Incl. of all taxes)")
 4. mfg_date: string or null (e.g. "OCT 2025")
 5. expiry_date: string or null (e.g. "SEP 2026")
@@ -87,8 +87,8 @@ RAW OCR TEXT:
             "fssai_number": None
         }
 
-        # 1. Net Quantity context extraction (e.g., cleans '1-05-26 50g' -> '50 g', '5g', '100 ml')
-        qty_m = re.search(r'\b(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|pcs|n)\b', raw_ocr_text, re.IGNORECASE)
+        # 1. Net Quantity context extraction (prioritizing packet weight e.g. 'NET WT 50g' -> '50 g')
+        qty_m = re.search(r'(?:NET\s*(?:QTY|WT|WEIGHT|QUANTITY|VOL)|N\.W\.)?\s*[:=.\s]*\b(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|liter|litres)\b', raw_ocr_text, re.IGNORECASE)
         if qty_m:
             extracted["net_quantity"] = f"{qty_m.group(1)} {qty_m.group(2)}"
 

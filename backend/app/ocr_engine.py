@@ -85,7 +85,7 @@ def detect_and_warp_perspective(img: np.ndarray) -> np.ndarray:
 
 def preprocess_image(image_bytes: bytes, max_dimension: int = 1600, apply_clahe: bool = True, apply_deskew: bool = True, apply_denoise: bool = False) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Decodes raw image bytes, applies optional perspective deskewing, resizes to max_dimension (1600px),
+    Decodes raw image bytes, resizes to max_dimension (1600px), applies optional perspective deskewing,
     and performs contrast enhancement (CLAHE) & optional non-local means denoising.
     """
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -96,19 +96,19 @@ def preprocess_image(image_bytes: bytes, max_dimension: int = 1600, apply_clahe:
         
     orig_h, orig_w, channels = img.shape
 
-    # 1. Perspective deskewing step
-    if apply_deskew:
-        img = detect_and_warp_perspective(img)
-
-    # 2. Smart resize to max_dimension (1600px) preserving aspect ratio
+    # 1. Smart resize to max_dimension (1600px) FIRST to optimize speed of subsequent CV operations & OCR
     curr_h, curr_w = img.shape[:2]
     if max(curr_h, curr_w) > max_dimension:
         scale = max_dimension / float(max(curr_h, curr_w))
         new_w, new_h = int(curr_w * scale), int(curr_h * scale)
         img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        logger.info(f"Resized input image from {curr_w}x{curr_h} to {new_w}x{new_h} for high-recall OCR")
+        logger.info(f"Resized input image from {curr_w}x{curr_h} to {new_w}x{new_h} for high-speed OCR")
     else:
         new_w, new_h = curr_w, curr_h
+
+    # 2. Perspective deskewing step on resized image
+    if apply_deskew:
+        img = detect_and_warp_perspective(img)
 
     # 3. Non-local means denoising for camera sensor noise
     if apply_denoise:
@@ -145,8 +145,8 @@ def get_rapid_ocr():
         return _RAPID_OCR
     try:
         from rapidocr_onnxruntime import RapidOCR
-        logger.info("Initializing RapidOCR ONNX engine with tuned detection parameters (unclip_ratio=2.0)...")
-        _RAPID_OCR = RapidOCR(unclip_ratio=2.0, box_thresh=0.35, text_score=0.35)
+        logger.info("Initializing RapidOCR ONNX engine with tuned parameters (max_side_len=1600)...")
+        _RAPID_OCR = RapidOCR(unclip_ratio=2.0, box_thresh=0.35, text_score=0.35, max_side_len=1600)
         return _RAPID_OCR
     except Exception as e:
         logger.warning(f"RapidOCR init failed: {e}")
@@ -186,8 +186,8 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
     """
     High-Speed & High-Recall Multi-Angle OCR Execution Function.
     Runs RapidOCR (PaddleOCR ONNX Runtime) at 1600px resolution with CLAHE contrast enhancement:
-    - Multi-angle rotation pass (0°, 90°, 270°) for small vertical/rotated text (MRP, Mfg Date near barcodes)
-    - Inverse coordinate mapping back to original 0° frame for perfect canvas rendering
+    - Primary 0° pass for fast extraction
+    - Adaptive rotation pass (90°, 270°) only if key LMPC fields are missing from 0° scan
     """
     img, meta = preprocess_image(image_bytes, max_dimension=1600, apply_clahe=True)
     H_orig, W_orig = meta["height"], meta["width"]
@@ -200,7 +200,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
         try:
             logger.info("Executing RapidOCR ONNX 0° primary pass...")
             result, elapse = rapid_engine(img)
-            ocr_engine_used = "RapidOCR (PaddleOCR ONNX Multi-Angle)"
+            ocr_engine_used = "RapidOCR (PaddleOCR ONNX)"
             
             block_id = 1
             existing_texts = set()
@@ -222,6 +222,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                     w_px = round(float(max_x - min_x), 2)
                     h_px = round(float(max_y - min_y), 2)
                     
+                    is_vert = (h_px / max(1.0, w_px)) > 1.8
                     blocks.append({
                         "id": block_id,
                         "text": text_str,
@@ -230,13 +231,23 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                         "rect": {"x": round(float(min_x), 1), "y": round(float(min_y), 1), "width": w_px, "height": h_px},
                         "height_px": h_px,
                         "width_px": w_px,
-                        "angle": 0
+                        "angle": 0,
+                        "is_vertical": is_vert
                     })
                     existing_texts.add(text_str.upper())
                     block_id += 1
 
-            # Multi-angle rotation pass for vertical/rotated text (90° and 270° CW)
-            if enable_multi_angle:
+            # Smart Adaptive Multi-Angle Pass:
+            # Check if 0° pass extracted sufficient LMPC key declarations. If so, skip expensive rotation passes.
+            all_text_concat = " ".join([b["text"].upper() for b in blocks])
+            has_mrp = any(kw in all_text_concat for kw in ["MRP", "RS", "₹", "PRICE", "MAX"])
+            has_qty = any(kw in all_text_concat for kw in ["NET", "QTY", "WEIGHT", "WT", "VOL", "50G", "100G", "250G", "1KG", "500G", "G", "KG", "ML", "L"])
+            has_mfg = any(kw in all_text_concat for kw in ["MFG", "PKD", "EXP", "DATE", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])
+
+            needs_rotation_pass = enable_multi_angle and not (len(blocks) >= 4 and (has_mrp or has_qty or has_mfg))
+
+            if needs_rotation_pass:
+                logger.info("0° pass incomplete - executing targeted 90°/270° rotation passes...")
                 angles_to_check = [
                     (90, cv2.ROTATE_90_CLOCKWISE),
                     (270, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -263,6 +274,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                             min_y, max_y = min(ys), max(ys)
                             w_px = round(float(max_x - min_x), 2)
                             h_px = round(float(max_y - min_y), 2)
+                            is_vert = (angle_deg in (90, 270)) or ((h_px / max(1.0, w_px)) > 1.8)
 
                             blocks.append({
                                 "id": block_id,
@@ -272,10 +284,13 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                                 "rect": {"x": round(float(min_x), 1), "y": round(float(min_y), 1), "width": w_px, "height": h_px},
                                 "height_px": h_px,
                                 "width_px": w_px,
-                                "angle": angle_deg
+                                "angle": angle_deg,
+                                "is_vertical": is_vert
                             })
                             existing_texts.add(t_str.upper())
                             block_id += 1
+            else:
+                logger.info(f"0° primary pass extracted {len(blocks)} blocks with key LMPC fields. Skipping rotation passes for speed.")
         except Exception as err:
             logger.error(f"RapidOCR error: {err}. Trying EasyOCR fallback...")
             blocks = []

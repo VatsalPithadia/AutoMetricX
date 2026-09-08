@@ -21,42 +21,80 @@ class FontCalibrator:
     def __init__(self):
         pass
 
-    def estimate_px_to_mm_scale(self, image: np.ndarray, metadata: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Tuple[float, str]:
+    def estimate_px_to_mm_scale(self, image: Optional[np.ndarray], metadata: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Tuple[float, str]:
         """
-        Estimates the pixels-per-millimeter (px/mm) scale factor.
+        Estimates the pixels-per-millimeter (px/mm) scale factor with ROI text-span refinement.
         """
-        # Method A: Try PyZbar barcode detection
-        try:
-            from pyzbar import pyzbar
-            barcodes = pyzbar.decode(image)
-            for barcode in barcodes:
-                rect = barcode.rect
-                if rect.width > 20 and rect.height > 10:
-                    scale = float(rect.width) / self.EAN13_STANDARD_WIDTH_MM
-                    logger.info(f"Calibrated physical scale via Barcode Detection: {scale:.2f} px/mm ({rect.width}px = {self.EAN13_STANDARD_WIDTH_MM}mm)")
-                    return scale, "EAN-13 Barcode Detection"
-        except Exception as err:
-            logger.debug(f"Barcode scale calibration skipped: {err}")
+        # Method A: Try PyZbar barcode detection if image array is available
+        if image is not None:
+            try:
+                from pyzbar import pyzbar
+                barcodes = pyzbar.decode(image)
+                for barcode in barcodes:
+                    rect = barcode.rect
+                    if rect.width > 20 and rect.height > 10:
+                        scale = float(rect.width) / self.EAN13_STANDARD_WIDTH_MM
+                        logger.info(f"Calibrated physical scale via Barcode Detection: {scale:.2f} px/mm ({rect.width}px = {self.EAN13_STANDARD_WIDTH_MM}mm)")
+                        return scale, "EAN-13 Barcode Detection"
+            except Exception as err:
+                logger.debug(f"Barcode scale calibration skipped: {err}")
 
-        # Method B: Fallback resolution scale
-        # Assuming nominal label width ~100mm for camera photos scaled to 1600px
+        # Method B: Text-Span ROI Scale Model (Label Surface Width ~ 90mm)
+        if blocks:
+            all_xs = []
+            all_ys = []
+            for b in blocks:
+                r = b.get("rect", {})
+                if r.get("width", 0) > 0 and r.get("height", 0) > 0:
+                    all_xs.extend([r["x"], r["x"] + r["width"]])
+                    all_ys.extend([r["y"], r["y"] + r["height"]])
+            
+            if all_xs and all_ys:
+                span_w = max(all_xs) - min(all_xs)
+                span_h = max(all_ys) - min(all_ys)
+                label_span_px = max(span_w, span_h)
+                
+                if label_span_px > 200:
+                    # Nominal printed label content width ~ 90mm
+                    scale = label_span_px / 90.0
+                    logger.info(f"Calibrated physical scale via Text-Span ROI: {scale:.2f} px/mm ({label_span_px:.0f}px span = 90mm)")
+                    return scale, f"Label Text-Span ROI ({int(label_span_px)}px = 90mm)"
+
+        # Method C: Canvas Resolution Fallback
         img_w = metadata.get("width", 1600)
         img_h = metadata.get("height", 1200)
         max_dim = max(img_w, img_h)
-
-        # Baseline: 1600px long edge on 100mm label width = 16.0 px/mm
         scale = max_dim / 100.0
         logger.info(f"Using resolution fallback scale calibration: {scale:.2f} px/mm")
         return scale, "Resolution Scale Model (1600px = 100mm)"
 
-    def calculate_letter_height_mm(self, height_px: float, px_to_mm_scale: float) -> float:
+    def calculate_letter_height_mm(self, field_obj: Dict[str, Any], px_to_mm_scale: float) -> float:
         """
-        Converts text bounding box height (px) to uppercase letter height (mm).
-        Capital letter height is ~70% of total line box height.
+        Converts text bounding box dimensions to physical uppercase letter height (mm).
+        Automatically handles vertical/rotated text blocks and multi-line line height normalization.
         """
-        if px_to_mm_scale <= 0:
+        if px_to_mm_scale <= 0 or not field_obj or not isinstance(field_obj, dict):
             return 0.0
-        letter_px = height_px * 0.70
+
+        rect = field_obj.get("rect") or {}
+        w_px = float(rect.get("width", 12.0))
+        h_px = float(rect.get("height", 12.0))
+        text = field_obj.get("raw_text", "")
+
+        is_vertical = field_obj.get("is_vertical", False) or (field_obj.get("angle", 0) in (90, 270)) or (h_px / max(1.0, w_px) > 2.2)
+
+        if is_vertical:
+            # For vertical text (reading top-to-bottom), font size is along width (perpendicular to line direction)
+            letter_px = w_px * 0.72
+        else:
+            # For horizontal text, check multi-line line breaks
+            num_lines = max(1, len(text.splitlines()))
+            if num_lines > 1:
+                line_h_px = h_px / float(num_lines)
+            else:
+                line_h_px = h_px
+            letter_px = line_h_px * 0.72
+
         height_mm = letter_px / px_to_mm_scale
         return round(float(height_mm), 2)
 
@@ -96,7 +134,7 @@ class FontCalibrator:
 
     def analyze_legibility_and_prominence(
         self,
-        image: np.ndarray,
+        image: Optional[np.ndarray],
         metadata: Dict[str, Any],
         classified_fields: Dict[str, Any],
         blocks: List[Dict[str, Any]]
@@ -115,10 +153,7 @@ class FontCalibrator:
         for field_name in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name"]:
             field_obj = classified_fields.get(field_name)
             if field_obj and isinstance(field_obj, dict):
-                rect = field_obj.get("rect") or {}
-                h_px = rect.get("height", 12.0)
-                h_mm = self.calculate_letter_height_mm(h_px, scale_px_mm)
-                field_obj["font_height_px"] = h_px
+                h_mm = self.calculate_letter_height_mm(field_obj, scale_px_mm)
                 field_obj["font_height_mm"] = h_mm
                 fields_font_mm[field_name] = h_mm
             else:
@@ -152,8 +187,7 @@ class FontCalibrator:
         body_heights_mm = []
         for b in blocks:
             if b.get("confidence", 0) >= 0.50:
-                h_px = b.get("height_px", 12.0)
-                body_heights_mm.append(self.calculate_letter_height_mm(h_px, scale_px_mm))
+                body_heights_mm.append(self.calculate_letter_height_mm(b, scale_px_mm))
 
         avg_body_mm = round(float(np.mean(body_heights_mm)), 2) if body_heights_mm else 1.0
         prominence_ratio = round(mrp_h_mm / avg_body_mm, 2) if mrp_h_mm and avg_body_mm > 0 else 1.0

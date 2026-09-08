@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import time
+import asyncio
 import cv2
 import numpy as np
 from typing import List, Optional
@@ -131,7 +132,7 @@ async def scan_label_image(file: UploadFile = File(...), db: Session = Depends(g
         f.write(contents)
         
     try:
-        pipeline_res = _process_single_image_bytes(contents, file.filename or "label.jpg")
+        pipeline_res = await asyncio.to_thread(_process_single_image_bytes, contents, file.filename or "label.jpg")
         processing_time_sec = round(time.time() - start_time, 3)
         
         result_payload = {
