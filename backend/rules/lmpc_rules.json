@@ -1,0 +1,144 @@
+{
+  "version": "1.0.0",
+  "act": "Legal Metrology (Packaged Commodities) Rules, 2011",
+  "rules": [
+    {
+      "rule_id": "LMPC-R6-1a",
+      "clause": "Rule 6(1)(a)",
+      "declaration": "manufacturer_name_address",
+      "name": "Manufacturer/Packer/Importer Details",
+      "description": "Name and complete address of the manufacturer, packer, or importer must be declared on every package.",
+      "mandatory": true,
+      "detection_keywords": [
+        "Mfd by",
+        "Manufactured by",
+        "Packed by",
+        "Marketed by",
+        "Importer",
+        "Mfg by",
+        "Pkd by",
+        "Manufactured & Marketed by",
+        "Mfg. by",
+        "Address",
+        "Regd. Office"
+      ]
+    },
+    {
+      "rule_id": "LMPC-R6-1b",
+      "clause": "Rule 6(1)(b)",
+      "declaration": "commodity_name",
+      "name": "Common/Generic Name of Commodity",
+      "description": "The common or generic names of the commodity contained in the package must be clearly stated.",
+      "mandatory": true,
+      "detection_keywords": [
+        "Net Weight",
+        "Product",
+        "Commodity",
+        "Item",
+        "Name of Product",
+        "Content",
+        "Contains"
+      ]
+    },
+    {
+      "rule_id": "LMPC-R6-1c",
+      "clause": "Rule 6(1)(c)",
+      "declaration": "net_quantity",
+      "name": "Net Quantity",
+      "description": "Net quantity in terms of standard unit of weight (g/kg), volume (mL/L), or number/count.",
+      "mandatory": true,
+      "detection_keywords": [
+        "Net Qty",
+        "Net Quantity",
+        "Net Vol",
+        "Net Volume",
+        "Net Wt",
+        "Net Weight",
+        "Quantity",
+        "Qty",
+        "g",
+        "kg",
+        "ml",
+        "L",
+        "N",
+        "Pcs",
+        "Units"
+      ]
+    },
+    {
+      "rule_id": "LMPC-R6-1d",
+      "clause": "Rule 6(1)(d)",
+      "declaration": "mfg_date",
+      "name": "Month & Year of Manufacture/Import",
+      "description": "The month and year in which the commodity is manufactured, packed, or imported.",
+      "mandatory": true,
+      "detection_keywords": [
+        "Mfg Date",
+        "Date of Mfg",
+        "Date of Manufacture",
+        "Packed Date",
+        "Pkd Date",
+        "Date of Packing",
+        "Imported Date",
+        "Mfg.",
+        "Pkd.",
+        "BEST BEFORE",
+        "EXP",
+        "Expiry"
+      ]
+    },
+    {
+      "rule_id": "LMPC-R6-1e",
+      "clause": "Rule 6(1)(e)",
+      "declaration": "mrp",
+      "name": "Maximum Retail Price (MRP)",
+      "description": "Retail Sale Price (MRP Rs. X.XX inclusive of all taxes) must be prominently printed.",
+      "mandatory": true,
+      "detection_keywords": [
+        "MRP",
+        "Maximum Retail Price",
+        "Rs",
+        "₹",
+        "Incl. of all taxes",
+        "Inclusive of all taxes",
+        "M.R.P."
+      ]
+    },
+    {
+      "rule_id": "LMPC-R6-1f",
+      "clause": "Rule 6(1)(f)",
+      "declaration": "consumer_care",
+      "name": "Consumer Care Details",
+      "description": "Name, address, telephone number, and email ID of the person/office to contact in case of consumer complaints.",
+      "mandatory": true,
+      "detection_keywords": [
+        "Consumer Care",
+        "Customer Care",
+        "Helpline",
+        "Toll Free",
+        "Email",
+        "Contact",
+        "Feedback",
+        "Grievance Officer",
+        "Call"
+      ]
+    },
+    {
+      "rule_id": "LMPC-R7-1",
+      "clause": "Rule 7(3)",
+      "name": "Minimum Font Height Threshold",
+      "description": "Minimum height of declaration letters (1.0mm normal print, 2.0mm embossed/molded).",
+      "check_type": "font_height_mm",
+      "min_value_mm": 1.0,
+      "min_value_mm_embossed": 2.0
+    },
+    {
+      "rule_id": "LMPC-R9-1",
+      "clause": "Rule 9(1)",
+      "name": "Manner & Prominence of MRP",
+      "description": "MRP declaration must be visually prominent and larger than surrounding text.",
+      "check_type": "mrp_prominence_ratio",
+      "min_ratio": 1.2
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "timestamp": 1788343608.9158247,
+  "total_test_images": 4,
+  "total_detected_blocks": 151,
+  "total_suspicious_matches": 1,
+  "images": [
+    {
+      "filename": "curved_bottle_label.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX)",
+      "image_size": "637x850",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 39,
+      "high_conf_blocks": 38,
+      "low_conf_blocks": 1,
+      "confident_declarations": 4,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 85.7,
+      "suspicious_flags": [],
+      "processing_time_sec": 16.64,
+      "classified_fields": {
+        "net_quantity": "0.02g",
+        "mfg_date": "0.010",
+        "manufacturer_details": "KEEPIN COOL&DRYPLACE Manufactured & Packed By: Godhra Road.At Pratappura",
+        "consumer_care": "CUSTOMERCARE NO.:9409200015",
+        "fssai_number": "10715016000063"
+      }
+    },
+    {
+      "filename": "dense_sachet_small_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX)",
+      "image_size": "850x637",
+      "original_size": "4080x3060",
+      "total_detected_blocks": 12,
+      "high_conf_blocks": 12,
+      "low_conf_blocks": 0,
+      "confident_declarations": 1,
+      "overall_status": "NON_COMPLIANT",
+      "compliance_score": 42.9,
+      "suspicious_flags": [],
+      "processing_time_sec": 4.29,
+      "classified_fields": {
+        "consumer_care": "consumer.2.co@gsk.com"
+      }
+    },
+    {
+      "filename": "package_label_medium_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX)",
+      "image_size": "637x850",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 25,
+      "high_conf_blocks": 24,
+      "low_conf_blocks": 1,
+      "confident_declarations": 4,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 85.7,
+      "suspicious_flags": [],
+      "processing_time_sec": 11.11,
+      "classified_fields": {
+        "net_quantity": "\uff081)\uff09Take250gpotatoboilandcrushit well(2\uff09eat0goiladdcrushd",
+        "mfg_date": "30-4-27",
+        "manufacturer_details": "Godhra Road.At Pratappura Manufactured &Packed By: KEEPINCOOL&DRY PLACE",
+        "consumer_care": "E-mail:info@shriharimasala.com CUSTOMER CARE NO.:94092 00015"
+      }
+    },
+    {
+      "filename": "suhana_sauce_packet_large_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX)",
+      "image_size": "637x850",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 75,
+      "high_conf_blocks": 73,
+      "low_conf_blocks": 2,
+      "confident_declarations": 5,
+      "overall_status": "COMPLIANT",
+      "compliance_score": 100.0,
+      "suspicious_flags": [
+        "Field overlap: 'expiry_date' and 'mrp' both claimed 'C25J05E 0CT.2025 SEP.2026F23.00'"
+      ],
+      "processing_time_sec": 9.86,
+      "classified_fields": {
+        "mrp": "C25J05E 0CT.2025 SEP.2026F23.00",
+        "net_quantity": "Per100g",
+        "expiry_date": "C25J05E 0CT.2025 SEP.2026F23.00",
+        "manufacturer_details": "Pkd.0n Keepinacoldrylaceawayfrom sunlightfor 3ervingspepack erin Se3gs ManufacturedPackedby: AVEERFODSLTD Pin412801(NDUA)",
+        "consumer_care": "Lic.No.11522997000170 suhanacare@suhana.co.in",
+        "fssai_number": "Lic.No.11522997000170"
+      }
+    }
+  ]
+}

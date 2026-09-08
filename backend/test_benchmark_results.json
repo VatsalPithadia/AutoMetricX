@@ -1,0 +1,149 @@
+{
+  "timestamp": 1788514396.161973,
+  "total_test_images": 6,
+  "total_detected_blocks": 501,
+  "total_suspicious_matches": 0,
+  "images": [
+    {
+      "filename": "biscuit_wrapper_label.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1600x1200",
+      "original_size": "1600x1200",
+      "total_detected_blocks": 16,
+      "high_conf_blocks": 16,
+      "low_conf_blocks": 0,
+      "confident_declarations": 7,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 87.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 24.18,
+      "classified_fields": {
+        "mrp": "MRP Rs 30.00",
+        "net_quantity": "Net Wt 120g",
+        "mfg_date": "DEC/2025",
+        "expiry_date": "PKD: DEC 2025 EXP: JUN 2026",
+        "manufacturer_details": "Manufactured by.Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604",
+        "consumer_care": "For Feedback Contact 022-25801234 care @goldenbakery.in",
+        "fssai_number": "11518014000890",
+        "commodity_name": "Generic Name: Biscuits with Almonds",
+        "unclassified_blocks_count": 9
+      }
+    },
+    {
+      "filename": "curved_bottle_label.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1200x1600",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 129,
+      "high_conf_blocks": 117,
+      "low_conf_blocks": 12,
+      "confident_declarations": 4,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 62.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 65.31,
+      "classified_fields": {
+        "net_quantity": "50g",
+        "manufacturer_details": "Manufactured &Packed By:",
+        "consumer_care": "CUSTOMERCARE NO.:9409200015 E-mail:info@shriharimasala.com",
+        "fssai_number": "10715016000063",
+        "commodity_name": "SHRI HARI MASALA",
+        "unclassified_blocks_count": 123
+      }
+    },
+    {
+      "filename": "dense_sachet_small_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1600x1200",
+      "original_size": "4080x3060",
+      "total_detected_blocks": 68,
+      "high_conf_blocks": 45,
+      "low_conf_blocks": 23,
+      "confident_declarations": 4,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 62.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 34.97,
+      "classified_fields": {
+        "mrp": "Rs. 109.00 (Incl. of all taxes)",
+        "manufacturer_details": "Pa OTHER",
+        "consumer_care": "consumer.2.co@gsk.com GSK Consumer Relations,",
+        "fssai_number": "19015711006861",
+        "commodity_name": "AYURVEDICPROPRIETARYMEDICINE",
+        "unclassified_blocks_count": 61
+      }
+    },
+    {
+      "filename": "package_label_medium_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1200x1600",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 126,
+      "high_conf_blocks": 110,
+      "low_conf_blocks": 16,
+      "confident_declarations": 4,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 62.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 66.26,
+      "classified_fields": {
+        "net_quantity": "1-05-26 50g",
+        "manufacturer_details": "Manufactured&Packed By:",
+        "consumer_care": "E-mail:info@shriharimasala.com CUSTOMER CARE NO.:94092 00015",
+        "fssai_number": "10715016000063",
+        "commodity_name": "SHRI HARI MASALA",
+        "unclassified_blocks_count": 118
+      }
+    },
+    {
+      "filename": "suhana_sauce_packet_large_text.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1200x1600",
+      "original_size": "3060x4080",
+      "total_detected_blocks": 144,
+      "high_conf_blocks": 124,
+      "low_conf_blocks": 20,
+      "confident_declarations": 7,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 87.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 57.05,
+      "classified_fields": {
+        "mrp": "MRP F23.00",
+        "net_quantity": "Pkd.0n",
+        "mfg_date": "C25J05E 0CT.2025 SEP.2026F23.00",
+        "expiry_date": "0CT/2025",
+        "manufacturer_details": "O Manufactured &Packed by: AVEER FOODS LTD",
+        "consumer_care": "Suhana Do not buy/consume puffedpack suhanacare@suhana.co.in",
+        "fssai_number": "11522997000170",
+        "commodity_name": "Soya Sauce",
+        "unclassified_blocks_count": 131
+      }
+    },
+    {
+      "filename": "tea_pouch_label.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX Multi-Angle)",
+      "image_size": "1200x1600",
+      "original_size": "1200x1600",
+      "total_detected_blocks": 18,
+      "high_conf_blocks": 18,
+      "low_conf_blocks": 0,
+      "confident_declarations": 7,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 87.5,
+      "suspicious_flags": [],
+      "processing_time_sec": 21.2,
+      "classified_fields": {
+        "mrp": "MRP Rs 185.00",
+        "net_quantity": "NetQuantity.250g",
+        "mfg_date": "NOV/2025",
+        "expiry_date": "Mfg Date: NOV 2025 | Expiry Date: OCT 2026",
+        "manufacturer_details": "Mfd  Pkd By. Royal Tea Estates Jorhat Assam -785001",
+        "consumer_care": "CustomerCare:1800-123-4567|email care@royaltea.com",
+        "fssai_number": "10321012000456",
+        "commodity_name": "Generic Commodity. Premium Black Tea",
+        "unclassified_blocks_count": 13
+      }
+    }
+  ]
+}
