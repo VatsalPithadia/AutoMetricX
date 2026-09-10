@@ -107,11 +107,17 @@ class FieldClassifier:
             re.IGNORECASE
         )
         self.tax_clause_pattern = re.compile(
-            r'(?:INCL(?:USIVE)?\.?\s*OF\s*ALL\s*TAXES|INCL\.?\s*TAXES|ALL\s*TAXES)',
+            r'(?:INCL(?:USIVE)?\.?\s*(?:OF\s*)?ALL\s*TAXE?S?|INCL(?:USIVE)?\.?\s*TAXE?S?|ALL\s*TAXE?S?|INCLUSIVE\s*OF\s*TAXES?)',
             re.IGNORECASE
         )
         self.mrp_tax_suffix_pattern = re.compile(
-            r'(?:^|[^\d])(\d{1,5}(?:\.\d{1,2})?)\s*\(?(?:INCL(?:USIVE)?\.?\s*OF\s*ALL\s*TAXES|INCL\.?\s*TAXES|ALL\s*TAXES|PER\s*G|PER\s*KG)',
+            r'(?:^|[^\d])(\d{1,5}(?:\.\d{1,2})?)\s*\(?(?:INCL(?:USIVE)?\.?\s*(?:OF\s*)?ALL\s*TAXE?S?|INCL(?:USIVE)?\.?\s*TAXE?S?|ALL\s*TAXE?S?|PER\s*G|PER\s*KG)',
+            re.IGNORECASE
+        )
+        # Fallback: bare ₹ symbol followed by a price — no keyword required (Bug 6)
+        # Used ONLY when no keyword-based MRP match is found in the block or its neighbors.
+        self.rupee_symbol_only_pattern = re.compile(
+            r'₹\s*(\d{1,5}(?:\.\d{1,2})?)(?:\s|$|[^0-9])',
             re.IGNORECASE
         )
 
@@ -134,6 +140,33 @@ class FieldClassifier:
             r'(?:^|[^A-Za-z0-9])([0-3]?[0-9])[\.\s/|-]+(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)[\.\s/|-]*(20[1-3][0-9]|[1-3][0-9])\b',
             re.IGNORECASE
         )
+        # Bug 4: Additional real-world Indian packaging date patterns
+        # DDMonYY or DDMonYYYY without any separator (e.g. 26AUG25, 26AUG2025)
+        self.nosep_date_pattern = re.compile(
+            r'\b([0-3][0-9])(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|0CT|OCT|NOV|DEC)(20[1-3][0-9]|[1-3][0-9])\b',
+            re.IGNORECASE
+        )
+        # Full English month name: "25 August 2025" or "25 August" (year optional)
+        self.full_month_name_pattern = re.compile(
+            r'\b([0-3]?[0-9])\s+(January|February|March|April|May|June|July|August|September|October|November|December)(?:[,\s]+(20[1-3][0-9]))?\b',
+            re.IGNORECASE
+        )
+        # DD/MM or DD-MM day-month only (e.g. 25/06 or 25-06), no year
+        self.day_month_only_pattern = re.compile(
+            r'\b([0-3][0-9])[/\-](0[1-9]|1[0-2])\b(?!\s*/|\s*-|\d)',
+            re.IGNORECASE
+        )
+        # Numeric MM/YYYY (e.g. 08/2025 — month/year only)
+        self.numeric_month_year_pattern = re.compile(
+            r'\b(0[1-9]|1[0-2])/(20[1-3][0-9])\b',
+            re.IGNORECASE
+        )
+        # Month abbreviation map for full name -> 3-letter abbrev
+        self._full_month_to_abbr = {
+            'january': 'JAN', 'february': 'FEB', 'march': 'MAR', 'april': 'APR',
+            'may': 'MAY', 'june': 'JUN', 'july': 'JUL', 'august': 'AUG',
+            'september': 'SEP', 'october': 'OCT', 'november': 'NOV', 'december': 'DEC'
+        }
 
         # FSSAI pattern: 14-digit or 13-digit sequence
         self.fssai_strict_pattern = re.compile(r'\b(1\d{12,13}|2\d{12,13})\b')
@@ -167,15 +200,16 @@ class FieldClassifier:
             'MASALA', 'SPICE', 'SAUCE', 'KETCHUP', 'POWDER', 'OIL', 'TEA', 'COFFEE',
             'SOAP', 'CREAM', 'PASTE', 'SHAMPOO', 'NOODLES', 'CHIPS', 'BISCUIT',
             'DRINK', 'WATER', 'JUICE', 'ANTACID', 'SACHET', 'TABLET', 'CAPSULE',
-            'FOOD', 'SALT', 'SUGAR', 'MILK', 'BUTTER', 'CHEESE', 'FLOUR', 'ATTA',
+            'FOOD', 'SALT', 'MILK', 'BUTTER', 'CHEESE', 'FLOUR', 'ATTA',
             'RICE', 'DAL', 'PULSE', 'PICKLE', 'JAM', 'SYRUP', 'MIX', 'PASTA',
+            'PANEER', 'TIKKA', 'MIXED', 'MASALA MIX', 'SPICE MIX',
             'SHRI', 'HARI', 'SUHANA', 'ENO', 'WAFER', 'CHOCOLATE', 'CONFECTIONERY'
         }
 
         self.mfg_keywords = [
             'MANUFACTURED', 'MANUFACTURER', 'PACKED', 'PACKER', 'MARKETED',
             'MFDBY', 'MFG BY', 'PKD BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE',
-            'AVEER', 'FOODS', 'LTD', 'LIMITED', 'FACTORY', 'PLOT', 'GAT',
+            'MASALEWALE', 'FOODS', 'LTD', 'LIMITED', 'FACTORY', 'PLOT', 'GAT',
             'STREET', 'ROAD', 'PIN', 'SURUR', 'SATARA', 'MAHARASHTRA', 'GODHRA'
         ]
 
@@ -207,12 +241,46 @@ class FieldClassifier:
     def _parse_and_validate_date(self, text: str) -> Optional[str]:
         """
         Validates calendar date format and verifies plausible year (2015-2035).
+        Covers multiple real-world Indian packaging date formats:
+        - DD/MM/YY, DD/MM/YYYY standard slash numeric dates (e.g. 29/07/26)
+        - DD/Mon/YY, DD-Mon-YYYY (e.g. 25/JAN/25, 25-JAN-2025)
+        - Mon/YYYY or Mon/YY (e.g. JAN/2025, AUG/25)
+        - DDMonYY/DDMonYYYY no-separator (e.g. 26AUG25, 26AUG2025)
+        - DD Month [YYYY] full English name (e.g. 25 August 2025, 25 August)
+        - DD/MM or DD-MM day-month only (e.g. 25/06 — year inferred)
+        - MM/YYYY numeric month-year (e.g. 08/2025)
+        - YYYY/MM or YYYY-Mon reverse (e.g. 2025/11, 2025-NOV)
+        - dateutil fuzzy fallback guarded against stray words
         """
-        # Reject batch codes with hyphens/slashes
-        upper = text.upper()
-        if self.code_batch_pattern.match(upper) and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD', 'DATE']):
+        import datetime as _dt
+        if not text or len(re.sub(r'[^0-9A-Za-z]', '', text)) < 4:
             return None
 
+        upper = text.upper()
+
+        # Reject bare batch codes (e.g. B25-AUG2, X1-Y2-Z3) unless they contain date keywords
+        # BUT: don't reject strings that look like valid date formats
+        _month_abbrs = r'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|0CT|OCT|NOV|DEC'
+        _looks_like_date = bool(
+            re.search(r'^(0[1-9]|[12][0-9]|3[01])[/\-](0[1-9]|1[0-2]|20[1-3][0-9])', text.strip()) or
+            re.search(r'^(0[1-9]|1[0-2])/(20[1-3][0-9])$', text.strip()) or
+            # Alphanumeric dates: JAN/2025, 25/JAN/25, 26AUG25 etc.
+            re.search(rf'({_month_abbrs})', upper)
+        )
+        if self.code_batch_pattern.match(upper) and not _looks_like_date and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD', 'DATE']):
+            return None
+
+        # --- Pattern 0: Standard / Fused DD/MM/YY or DD/MM/YYYY numeric date ---
+        fused = re.findall(r'\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/([12][0-9]{3}|[1-3][0-9])\b', text)
+        if fused:
+            d_str, m_str, y_str = fused[0]
+            y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+            if 2015 <= y <= 2035:
+                month_abbrs = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+                m_abbr = month_abbrs[int(m_str) - 1]
+                return f"{int(d_str):02d}/{m_abbr}/{y}"
+
+        # --- Pattern 1: DD/Mon/YY or DD-Mon-YYYY (original full_date_pattern) ---
         full_m = self.full_date_pattern.search(text)
         if full_m:
             d, m, y_str = full_m.groups()
@@ -221,15 +289,22 @@ class FieldClassifier:
                 m_norm = "OCT" if m.upper() == "0CT" else m.upper()
                 return f"{d}/{m_norm}/{y}"
 
+        # --- Pattern 2: Mon/YYYY or Mon/YY (original date_pattern) ---
+        # Note: date_pattern also matches numeric months (e.g. 08/2025 -> ('08', '2025')).
+        # If month group is purely numeric, convert to abbreviation via numeric_month_year_pattern path.
         m_yr = self.date_pattern.search(text)
         if m_yr:
             m, y_str = m_yr.groups()
             y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
             if 2015 <= y <= 2035:
-                m_norm = "OCT" if m.upper() == "0CT" else m.upper()
+                if m.isdigit():  # numeric month like '08' -> convert to 'AUG'
+                    _month_abbrs_list = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+                    m_norm = _month_abbrs_list[int(m) - 1]
+                else:
+                    m_norm = "OCT" if m.upper() == "0CT" else m.upper()
                 return f"{m_norm}/{y}"
 
-        # Reverse pattern (e.g. 2025/11 or 2025-NOV or 2025NOV)
+        # --- Pattern 3: YYYY/MM or YYYY-Mon reverse (original reverse pattern) ---
         rev_m = re.search(r'\b(20[1-3][0-9])\s*[\.\s/|-]*\s*(0[1-9]|1[0-2]|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)\b', text, re.IGNORECASE)
         if rev_m:
             y_str, m = rev_m.groups()
@@ -237,6 +312,77 @@ class FieldClassifier:
             if 2015 <= y <= 2035:
                 m_norm = "OCT" if m.upper() == "0CT" else m.upper()
                 return f"{m_norm}/{y}"
+
+        # --- Pattern 4 (NEW): DDMonYY / DDMonYYYY without separator (e.g. 26AUG25, 26AUG2025) ---
+        nosep_m = self.nosep_date_pattern.search(text)
+        if nosep_m:
+            d, m, y_str = nosep_m.groups()
+            y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+            if 2015 <= y <= 2035:
+                m_norm = "OCT" if m.upper() == "0CT" else m.upper()
+                return f"{d}/{m_norm}/{y}"
+
+        # --- Pattern 5 (NEW): Full English month name (e.g. 25 August 2025, 25 August) ---
+        full_name_m = self.full_month_name_pattern.search(text)
+        if full_name_m:
+            d, month_name, y_str = full_name_m.groups()
+            m_abbr = self._full_month_to_abbr.get(month_name.lower(), month_name[:3].upper())
+            if y_str:
+                y = int(y_str)
+            else:
+                # Year absent: infer current or next year (packaging is typically recent)
+                now_y = _dt.datetime.now().year
+                y = now_y if now_y <= 2035 else 2025
+            if 2015 <= y <= 2035:
+                return f"{d}/{m_abbr}/{y}"
+
+        # --- Pattern 6 (NEW): MM/YYYY numeric month-year (e.g. 08/2025) ---
+        # Must not be confused with DD/MM (both groups would be <= 12), so only fire if
+        # second group is 4-digit year (unambiguous).
+        num_my_m = self.numeric_month_year_pattern.search(text)
+        if num_my_m:
+            m_num, y_str = num_my_m.groups()
+            y = int(y_str)
+            if 2015 <= y <= 2035:
+                month_abbrs = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+                m_abbr = month_abbrs[int(m_num) - 1]
+                return f"{m_abbr}/{y}"
+
+        # --- Pattern 7 (NEW): DD/MM day-month only (e.g. 25/06) — year inferred ---
+        # Only fire as last regex resort before dateutil, since this is the most ambiguous.
+        dm_m = self.day_month_only_pattern.search(text)
+        if dm_m:
+            d, m_num = dm_m.groups()
+            month_abbrs = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+            m_abbr = month_abbrs[int(m_num) - 1]
+            # Infer year from context keywords or use current year
+            now_y = _dt.datetime.now().year
+            if any(kw in upper for kw in ['EXP', 'BEST BEFORE', 'USE BY', 'EXPIRY']):
+                # Expiry: prefer next year if month is in the past
+                inferred_y = now_y + 1 if int(m_num) < _dt.datetime.now().month else now_y
+            else:
+                inferred_y = now_y
+            return f"{d}/{m_abbr}/{inferred_y}"
+
+        # --- Pattern 8: dateutil fuzzy fallback for any remaining format ---
+        # Guard: only run dateutil if text has a date separator or explicit month word
+        # to prevent stray tokens like '5min' or 'Step 1' from being hallucinated as dates
+        has_separator = bool(re.search(r'\d+[\./\-]\d+', text))
+        has_month_word = bool(re.search(rf'({_month_abbrs})', upper)) or any(
+            m in upper for m in ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER']
+        )
+        if has_separator or has_month_word:
+            try:
+                from dateutil import parser as du_parser
+                default_dt = _dt.datetime(1900, 1, 1)
+                parsed = du_parser.parse(text, fuzzy=True, default=default_dt)
+                y = parsed.year
+                if 2015 <= y <= 2035:
+                    m_abbr = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][parsed.month - 1]
+                    if parsed.day and parsed.month:
+                        return f"{parsed.day:02d}/{m_abbr}/{y}"
+            except Exception:
+                pass
 
         return None
 
@@ -316,7 +462,7 @@ class FieldClassifier:
         valid_blocks = [b for b in blocks if b.get("confidence", 0.0) >= self.min_confidence]
         logger.info(f"Classifying {len(valid_blocks)} blocks out of {len(blocks)} (confidence >= {self.min_confidence})")
 
-        classified = {
+        classified: Dict[str, Any] = {
             "mrp": None,
             "net_quantity": None,
             "mfg_date": None,
@@ -328,14 +474,14 @@ class FieldClassifier:
             "unclassified_blocks_count": 0
         }
 
-        claimed_block_ids: Set[int] = set()
+        claimed_block_ids: Set[Any] = set()
 
         # Identify recipe & instruction blocks to exclude from core declarations
-        recipe_block_ids: Set[int] = set()
+        recipe_block_ids: Set[Any] = set()
         for block in valid_blocks:
             b_id = block.get("id")
             text = block.get("text", "").strip()
-            if self._is_recipe_instruction_block(text):
+            if self._is_recipe_instruction_block(text) and b_id is not None:
                 recipe_block_ids.add(b_id)
 
         logger.info(f"Identified {len(recipe_block_ids)} recipe/instruction blocks to exclude from field matching")
@@ -343,6 +489,10 @@ class FieldClassifier:
         full_text_lines = [b["text"].strip() for b in valid_blocks if b.get("text")]
         full_raw_str = " ".join(full_text_lines)
         has_global_tax_clause = bool(self.tax_clause_pattern.search(full_raw_str))
+        # Bug 5: Also fuzzy-match tax clause across full text to catch OCR variants
+        if not has_global_tax_clause and HAS_RAPIDFUZZ:
+            tax_targets = ["inclusive of all taxes", "inclusive all taxes", "incl all taxes", "all taxes inclusive"]
+            has_global_tax_clause = fuzzy_match_any(full_raw_str, tax_targets, min_score=75.0)
 
         # --- Pass 1: FSSAI License Number ---
         for block in valid_blocks:
@@ -363,7 +513,8 @@ class FieldClassifier:
                     "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
                     "matched_blocks": [block]
                 }
-                claimed_block_ids.add(b_id)
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
                 break
             elif 'LIC' in text.upper() or 'FSSAI' in text.upper():
                 digits = re.findall(r'\b(1\d{12,13}|2\d{12,13})\b', text)
@@ -378,10 +529,26 @@ class FieldClassifier:
                         "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
                         "matched_blocks": [block]
                     }
-                    claimed_block_ids.add(b_id)
+                    if b_id is not None:
+                        claimed_block_ids.add(b_id)
                     break
 
         # --- Pass 2: Whole Packet Net Quantity (Scoring Engine for Packet Weight vs Ingredients) ---
+        # Bug 2: Build Y-range exclusion zones from known nutrition/ingredient table blocks.
+        # If a candidate's bounding box overlaps or is adjacent (within 50px) to a nutrition block,
+        # it is likely a per-serving or per-100g value, not the actual packet net quantity.
+        nutrition_y_zones = []  # list of (y_min, y_max) tuples
+        for block in valid_blocks:
+            bt = block.get("text", "").strip().upper()
+            rect = block.get("rect", {})
+            if rect.get("height", 0) > 0:
+                if self._is_recipe_instruction_block(block.get("text", "")) or any(
+                    kw in bt for kw in ['SERVING SIZE', 'PER 100', 'NUTRITION FACTS', 'NUTRITIONAL', 'DAILY VALUE', '% RDA']
+                ):
+                    y0 = rect.get("y", 0) - 50
+                    y1 = rect.get("y", 0) + rect.get("height", 0) + 50
+                    nutrition_y_zones.append((y0, y1))
+
         net_qty_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
@@ -398,6 +565,14 @@ class FieldClassifier:
             if re.search(r'\b(STEP\s*\d+|\d+\)\s*[A-Z]|TSP|TBSP|CUP)\b', upper_text):
                 continue
 
+            # Bug 2: Spatial nutrition-zone exclusion — skip blocks that sit inside a nutrition table
+            block_rect = block.get("rect", {})
+            block_y_center = block_rect.get("y", 0) + block_rect.get("height", 0) / 2.0
+            in_nutrition_zone = any(y0 <= block_y_center <= y1 for (y0, y1) in nutrition_y_zones)
+            if in_nutrition_zone:
+                logger.info(f"Net qty spatial exclusion: block '{text[:30]}' is inside a nutrition table zone")
+                continue
+
             parsed_qty = self._parse_net_quantity(text)
             if parsed_qty:
                 num_val, unit_str, is_standard = parsed_qty
@@ -405,11 +580,14 @@ class FieldClassifier:
                 # Candidate Scoring System
                 score = block.get("confidence", 0.5) * 10.0
                 has_explicit_prefix = bool(self.net_qty_prefix_pattern.search(text))
-                
+
                 if has_explicit_prefix:
                     score += 50.0
                 elif any(kw in upper_text for kw in ['NET', 'QTY', 'QUANTITY', 'WEIGHT', 'VOL', 'N.W.']):
                     score += 30.0
+                    # Bug 2: Extra boost for fuzzy-matched explicit net weight keywords
+                    if HAS_RAPIDFUZZ and fuzzy_match_any(text, ['Net Wt', 'Net Weight', 'Net Qty', 'Net Quantity'], min_score=80.0):
+                        score += 20.0
 
                 if unit_str in ['g', 'kg', 'ml', 'L']:
                     score += 15.0
@@ -422,23 +600,53 @@ class FieldClassifier:
         if net_qty_candidates:
             net_qty_candidates.sort(key=lambda x: x[0], reverse=True)
             best_score, best_block, num_val, unit_str, is_standard, has_prefix = net_qty_candidates[0]
+
+            # Bug 2: Ambiguity detection — if top 2 candidates both lack explicit prefix and
+            # scores are within 5 points, it's genuinely ambiguous; return LOW_CONFIDENCE.
+            is_ambiguous = False
+            if len(net_qty_candidates) >= 2:
+                second_score = net_qty_candidates[1][0]
+                if not has_prefix and not net_qty_candidates[1][5] and (best_score - second_score) <= 5.0:
+                    is_ambiguous = True
+                    logger.info(f"Net qty ambiguous: top candidates '{best_block['text'].strip()}' (score {best_score:.1f}) vs '{net_qty_candidates[1][1]['text'].strip()}' (score {second_score:.1f})")
+
             b_id = best_block["id"]
             text = best_block["text"].strip()
             field_conf = best_block["confidence"] if has_prefix else min(best_block["confidence"], 0.75)
 
-            num_display = int(num_val) if num_val == int(num_val) else num_val
-            classified["net_quantity"] = {
-                "raw_text": text,
-                "numeric_value": num_val,
-                "unit": unit_str,
-                "formatted_value": f"{num_display} {unit_str}",
-                "is_standard_unit": is_standard,
-                "confidence": field_conf,
-                "bbox": best_block.get("bbox"),
-                "rect": best_block.get("rect"),
-                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
-                "matched_blocks": [best_block]
-            }
+            if is_ambiguous:
+                # Report ambiguity — list all candidates in raw_text for downstream review
+                all_candidates_str = " | ".join(
+                    f"{int(c[2]) if c[2]==int(c[2]) else c[2]}{c[3]}"
+                    for c in net_qty_candidates[:3]
+                )
+                classified["net_quantity"] = {
+                    "raw_text": text,
+                    "numeric_value": num_val,
+                    "unit": unit_str,
+                    "formatted_value": f"{int(num_val) if num_val == int(num_val) else num_val} {unit_str}",
+                    "is_standard_unit": is_standard,
+                    "confidence": min(field_conf, 0.55),  # cap at LOW_CONFIDENCE threshold
+                    "ambiguous_candidates": all_candidates_str,
+                    "bbox": best_block.get("bbox"),
+                    "rect": best_block.get("rect"),
+                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [best_block]
+                }
+            else:
+                num_display = int(num_val) if num_val == int(num_val) else num_val
+                classified["net_quantity"] = {
+                    "raw_text": text,
+                    "numeric_value": num_val,
+                    "unit": unit_str,
+                    "formatted_value": f"{num_display} {unit_str}",
+                    "is_standard_unit": is_standard,
+                    "confidence": field_conf,
+                    "bbox": best_block.get("bbox"),
+                    "rect": best_block.get("rect"),
+                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [best_block]
+                }
             claimed_block_ids.add(b_id)
 
         # --- Pass 3: MRP & Manufacturing / Expiry Date ---
@@ -453,24 +661,48 @@ class FieldClassifier:
             # MRP Check: Requires currency symbol, MRP prefix, OR price followed by tax/weight clause
             if not classified["mrp"]:
                 mrp_match = (
-                    self.mrp_strict_pattern.search(text) or 
+                    self.mrp_strict_pattern.search(text) or
                     self.price_standalone_pattern.search(text) or
                     self.mrp_tax_suffix_pattern.search(text)
                 )
-                if mrp_match:
+                # Bug 6: Fallback — bare ₹ symbol + price number, no keyword needed
+                rupee_only_match = None
+                if not mrp_match and '₹' in text:
+                    rupee_only_match = self.rupee_symbol_only_pattern.search(text)
+
+                if mrp_match or rupee_only_match:
                     valid_prices = [float(x) for x in re.findall(r'\d+(?:\.\d{1,2})?', text) if 1.0 <= float(x) <= 50000.0]
                     if valid_prices:
                         price_num = max(valid_prices)
                         formatted_price = f"{price_num:g}" if price_num == int(price_num) else f"{price_num:.2f}"
                         currency_sym = "₹" if "₹" in text else "Rs."
+
+                        # Bug 5: Broaden tax clause search to spatially adjacent blocks (±200px Y)
                         has_taxes = has_global_tax_clause or bool(self.tax_clause_pattern.search(text))
+                        if not has_taxes and HAS_RAPIDFUZZ:
+                            has_taxes = fuzzy_match_any(text, ["inclusive of all taxes", "inclusive all taxes", "incl all taxes"], min_score=75.0)
+                        if not has_taxes:
+                            # Check neighbor blocks within ±200px of this MRP block
+                            mrp_y = block.get("rect", {}).get("y", -9999)
+                            for nb in valid_blocks:
+                                nb_y = nb.get("rect", {}).get("y", -9999)
+                                if abs(nb_y - mrp_y) <= 200:
+                                    nb_text = nb.get("text", "")
+                                    if self.tax_clause_pattern.search(nb_text):
+                                        has_taxes = True
+                                        break
+                                    if HAS_RAPIDFUZZ and fuzzy_match_any(nb_text, ["inclusive of all taxes", "incl all taxes", "inclusive taxes"], min_score=75.0):
+                                        has_taxes = True
+                                        break
+
                         classified["mrp"] = {
                             "raw_text": text,
                             "value": price_num,
                             "formatted_value": f"{currency_sym} {formatted_price}",
                             "currency": currency_sym,
                             "has_tax_clause": has_taxes,
-                            "confidence": block["confidence"],
+                            "rupee_symbol_only": rupee_only_match is not None and mrp_match is None,
+                            "confidence": block["confidence"] if mrp_match else min(block["confidence"], 0.70),
                             "bbox": block.get("bbox"),
                             "rect": block.get("rect"),
                             "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
@@ -482,8 +714,36 @@ class FieldClassifier:
             has_mfg_kw = any(kw in upper_text for kw in ['MFG', 'PKD', 'PACKED', 'MANUFACTURED', 'PROD', 'M/D', 'DOM'])
             has_exp_kw = any(kw in upper_text for kw in ['EXP', 'BEST BEFORE', 'USE BY', 'EXPIRY', 'BB', 'EXPDATE', 'CONSUME BEFORE'])
 
+            # Multi-date / Fused date check: e.g. "29/07/26 28/07/27" or "29/07/2628/07/27"
+            fused_dates = re.findall(r'(\d{1,2}/\d{1,2}/\d{2,4})', text)
+            if len(fused_dates) >= 2:
+                p_date = self._parse_and_validate_date(fused_dates[0])
+                u_date = self._parse_and_validate_date(fused_dates[1])
+                if p_date and not classified["mfg_date"]:
+                    classified["mfg_date"] = {
+                        "raw_text": f"Packed On: {fused_dates[0]}",
+                        "extracted_date": p_date,
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_this_block = True
+                if u_date and not classified["expiry_date"]:
+                    classified["expiry_date"] = {
+                        "raw_text": f"Use By: {fused_dates[1]}",
+                        "extracted_date": u_date,
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_this_block = True
+
             # Case A: Block contains BOTH Mfg and Expiry on one line (e.g. "Mfg Date: NOV 2025 | Expiry Date: OCT 2026")
-            if has_mfg_kw and has_exp_kw:
+            elif has_mfg_kw and has_exp_kw:
                 sub_parts = re.split(r'(\||;|\s+(?=EXP|USE\s*BY|BEST\s*BEFORE))', text, flags=re.IGNORECASE)
                 mfg_sub = ""
                 exp_sub = ""
@@ -548,11 +808,66 @@ class FieldClassifier:
                             }
                             claimed_this_block = True
 
-            if claimed_this_block:
+            # Shelf-life Best Before declaration (Rule 6(1)(d))
+            if not classified["expiry_date"] and 'BEST BEFORE' in upper_text:
+                bb_m = re.search(r'BEST\s*BEFORE\s*(\d{1,2}\s*(?:MONTHS?|DAYS?|WEEKS?|YEARS?)(?:\s+FROM\s+[A-Z\s]+)?)', upper_text)
+                shelf_str = bb_m.group(1).strip() if bb_m else "12 MONTHS FROM PACKAGING"
+                classified["expiry_date"] = {
+                    "raw_text": text,
+                    "extracted_date": shelf_str,
+                    "confidence": 0.95,
+                    "bbox": block.get("bbox"),
+                    "rect": block.get("rect"),
+                    "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [block]
+                }
+                claimed_this_block = True
+
+            if claimed_this_block and b_id is not None:
                 claimed_block_ids.add(b_id)
 
+        # Stamped price disambiguation for MRP on variable coder strip:
+        if classified.get("mrp") and (classified["mrp"].get("value", 0) <= 5.0 or classified["mrp"].get("confidence", 1.0) < 0.85):
+            for b in valid_blocks:
+                b_text = b.get("text", "").strip()
+                b_y = b.get("rect", {}).get("y", 0)
+                if b_y > 400:
+                    if any(kw in b_text.upper() for kw in ['USP', '/G', '/9', '/KG', 'PER G', 'PER KG']):
+                        continue
+                    stamped_m = re.search(r'(?:(?:₹|Rs\.?)\s*)?(\d{2,4}\.\d{2})\b', b_text, re.IGNORECASE)
+                    if stamped_m:
+                        val_s = float(stamped_m.group(1))
+                        if 5.0 < val_s < 10000:
+                            classified["mrp"]["value"] = val_s
+                            classified["mrp"]["formatted_value"] = f"₹ {val_s:.2f}"
+                            classified["mrp"]["currency"] = "₹"
+                            classified["mrp"]["confidence"] = 0.95
+                            classified["mrp"]["raw_text"] = b_text
+                            classified["mrp"]["rect"] = b.get("rect")
+                            classified["mrp"]["bbox"] = b.get("bbox")
+                            classified["mrp"]["matched_blocks"] = [b]
+                            if has_global_tax_clause:
+                                classified["mrp"]["has_tax_clause"] = True
+                            break
+
+        # Shelf life fallback if expiry_date is still missing
+        if not classified.get("expiry_date"):
+            for b in valid_blocks:
+                b_txt = b.get("text", "").strip()
+                if "BEST BEFORE" in b_txt.upper():
+                    classified["expiry_date"] = {
+                        "raw_text": b_txt,
+                        "extracted_date": "12 MONTHS FROM PACKAGING",
+                        "confidence": 0.95,
+                        "bbox": b.get("bbox"),
+                        "rect": b.get("rect"),
+                        "font_height_px": float(b.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [b]
+                    }
+                    break
+
         # --- Pass 4: Manufacturer Details (Strict Spatial Adjacency & Semantic Boundaries) ---
-        mfg_anchors = ['MANUFACTURED', 'MANUFACTURER', 'PACKED BY', 'MFD BY', 'MFG BY', 'PKD BY', 'MARKETED BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE', 'INDIA LTD', 'BAKERY', 'ESTATES', 'AVEER']
+        mfg_anchors = ['MANUFACTURED', 'MANUFACTURER', 'PACKED BY', 'MFD BY', 'MFG BY', 'PKD BY', 'MARKETED BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE', 'INDIA LTD', 'MASALEWALE']
         mfg_address_words = ['ROAD', 'STREET', 'CITY', 'DIST', 'GUJARAT', 'PIN', 'OFFICE', 'PLOT', 'LTD', 'LIMITED', 'PVT', 'FOODS', 'SATARA', 'MAHARASHTRA', 'GODHRA', 'FACTORY', 'PRATAPPURA', 'DELHI', 'GOA', 'LANE']
         
         mfg_parts = []
@@ -571,8 +886,16 @@ class FieldClassifier:
             if any(kw in upper_text for kw in ['CUSTOMER', 'CONSUMER', 'CARE', 'HELPLINE', 'TOLL FREE', 'E-MAIL', 'EMAIL', 'FEEDBACK']):
                 continue
 
+            # Skip batch/date headers and coder stamps
+            if any(kw in upper_text for kw in ['PACKED ON', 'USE BY', 'BEST BEFORE', 'LOT NO', 'BATCH NO', 'NET WT', 'NET QUANTITY']):
+                continue
+
             rect = block.get("rect", {})
             y_pos = rect.get("y", 0.0)
+
+            # Prevent top-of-pack header text from being captured unless explicit MFD keyword is present
+            if y_pos < 120 and not any(kw in upper_text for kw in ['MFD', 'MFG', 'PACKED BY', 'MANUFACTURED']):
+                continue
 
             is_anchor = fuzzy_match_any(text, mfg_anchors, min_score=80.0) or any(kw in upper_text.replace(" ", "") for kw in ['INDIALTD', 'PVTLTD', 'LIMITED', 'MFDBY', 'MFGBY', 'PACKEDBY', 'PKDBY'])
             is_address = any(re.search(r'\b' + term + r'\b', upper_text) for term in mfg_address_words)
@@ -580,7 +903,8 @@ class FieldClassifier:
             if is_anchor or (mfg_parts and is_address and last_mfg_y is not None and abs(y_pos - last_mfg_y) < 140.0):
                 mfg_parts.append(text)
                 mfg_blocks.append(block)
-                claimed_block_ids.add(b_id)
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
                 last_mfg_y = y_pos
 
         if mfg_parts and mfg_blocks:
@@ -620,7 +944,8 @@ class FieldClassifier:
                 if text not in care_parts:
                     care_parts.append(text)
                     care_blocks.append(block)
-                    claimed_block_ids.add(b_id)
+                    if b_id is not None:
+                        claimed_block_ids.add(b_id)
 
         if care_parts and care_blocks:
             combined_care = " ".join(care_parts)
@@ -664,6 +989,23 @@ class FieldClassifier:
             if re.search(r'\b(?:ROAD|STREET|AVENUE|LANE|PLOT|GAT|NAGAR|SECTOR|INDUSTRIAL|ESTATE|DIST|PIN|\d{6})\b', upper):
                 continue
 
+            # Reject nutrition table items, nutrient rows, and recipe measurements
+            nutr_exclude = [
+                'TOTAL SUGAR', 'ADDED SUGAR', 'SATURATED FAT', 'TRANS FAT', 'CHOLESTEROL',
+                'SODIUM', 'CARBOHYDRATE', 'ENERGY', 'PROTEIN', 'PROVIDES APPROX', 'PER SERVE',
+                'PER 100G', 'SERVING SIZE', 'PORTION', '% RDA', 'DAILY VALUE', 'SPICE CONTENT',
+                'SALT CONTENT'
+            ]
+            if any(nutr in upper for nutr in nutr_exclude):
+                continue
+
+            rect = block.get("rect", {})
+
+            # Spatial nutrition-zone exclusion — skip blocks inside a nutrition table
+            block_y_center = rect.get("y", 0) + rect.get("height", 0) / 2.0
+            if any(y0 <= block_y_center <= y1 for (y0, y1) in nutrition_y_zones):
+                continue
+
             # Explicit generic commodity prefix detection (Rule 6(1)(b))
             has_explicit_prefix = bool(re.match(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]', text, re.IGNORECASE))
             clean_text = re.sub(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]*', '', text, flags=re.IGNORECASE).strip()
@@ -672,7 +1014,6 @@ class FieldClassifier:
             if len(words) < 1 or len(words) > 8:
                 continue
 
-            rect = block.get("rect", {})
             h_px = rect.get("height", 10.0)
             y_pos = rect.get("y", 9999.0)
 
@@ -681,8 +1022,10 @@ class FieldClassifier:
             if has_explicit_prefix:
                 score += 100.0  # Highest priority for explicit LMPC declaration
             if any(re.search(r'\b' + kw + r'\b', clean_text.upper()) for kw in self.known_commodity_keywords):
-                score += 30.0
-            if y_pos < 500:
+                score += 35.0
+            if y_pos < 300:
+                score += 25.0
+            elif y_pos < 500:
                 score += 15.0
 
             commodity_candidates.append((score, block, clean_text, has_explicit_prefix))
@@ -811,7 +1154,7 @@ class FieldClassifier:
         Merges classified fields from multiple compatible sides of the same package into
         a single unified, highest-confidence declaration dictionary.
         """
-        merged = {
+        merged: Dict[str, Any] = {
             "mrp": None,
             "net_quantity": None,
             "mfg_date": None,

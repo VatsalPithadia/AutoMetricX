@@ -45,13 +45,15 @@ class BarcodeQREngine:
             try:
                 bc_detector = cv2.barcode.BarcodeDetector()
                 ok, info, _ = bc_detector.detectAndDecode(image)
-                if ok and len(info) > 0 and info.strip():
+                info_val = info[0] if isinstance(info, (list, tuple)) and len(info) > 0 else info
+                info_str = str(info_val).strip() if info_val is not None else ""
+                if ok and info_str:
                     results.append({
                         "type": "EAN13",
-                        "data": info.strip(),
+                        "data": info_str,
                         "rect": {"x": 0.0, "y": 0.0, "width": 100.0, "height": 50.0}
                     })
-                    logger.info(f"Decoded 1D barcode via OpenCV BarcodeDetector: {info.strip()}")
+                    logger.info(f"Decoded 1D barcode via OpenCV BarcodeDetector: {info_str}")
             except Exception as err:
                 logger.debug(f"OpenCV barcode detector fallback skipped: {err}")
 

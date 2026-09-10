@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import re
 import logging
 from typing import List, Dict, Any, Tuple
 
@@ -215,12 +216,12 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                     if not text_str:
                         continue
                         
-                    xs = [p[0] for p in bbox]
-                    ys = [p[1] for p in bbox]
+                    xs = [float(p[0]) for p in bbox]
+                    ys = [float(p[1]) for p in bbox]
                     min_x, max_x = min(xs), max(xs)
                     min_y, max_y = min(ys), max(ys)
-                    w_px = round(float(max_x - min_x), 2)
-                    h_px = round(float(max_y - min_y), 2)
+                    w_px = round(max_x - min_x, 2)
+                    h_px = round(max_y - min_y, 2)
                     
                     is_vert = (h_px / max(1.0, w_px)) > 1.8
                     blocks.append({
@@ -267,12 +268,12 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                                 continue
 
                             # Transform bbox back to 0° frame
-                            bbox_orig = [transform_rotated_point(p, angle_deg, W_orig, H_orig) for p in bbox_rot]
-                            xs = [p[0] for p in bbox_orig]
-                            ys = [p[1] for p in bbox_orig]
+                            bbox_orig = [transform_rotated_point([float(p[0]), float(p[1])], angle_deg, W_orig, H_orig) for p in bbox_rot]
+                            xs = [float(p[0]) for p in bbox_orig]
+                            ys = [float(p[1]) for p in bbox_orig]
                             min_x, max_x = min(xs), max(xs)
                             min_y, max_y = min(ys), max(ys)
-                            w_px = round(float(max_x - min_x), 2)
+                            w_px = round(max_x - min_x, 2)
                             h_px = round(float(max_y - min_y), 2)
                             is_vert = (angle_deg in (90, 270)) or ((h_px / max(1.0, w_px)) > 1.8)
 
@@ -291,6 +292,136 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                             block_id += 1
             else:
                 logger.info(f"0° primary pass extracted {len(blocks)} blocks with key LMPC fields. Skipping rotation passes for speed.")
+
+            # 1b. Targeted Bottom Strip Pass (Inkjet Variable Coder Strip: Batch, Dates, MRP, USP)
+            # In Indian packaged commodities, variable batch data (batch no, packed date, expiry/use-by,
+            # MRP and unit sale price) is stamped on the bottom 25% using continuous inkjet/dot-matrix.
+            # Using raw image resolution with single CLAHE pass guarantees clean dot-matrix segmentation.
+            if rapid_engine is not None:
+                try:
+                    raw_nparr = np.frombuffer(image_bytes, np.uint8)
+                    raw_img = cv2.imdecode(raw_nparr, cv2.IMREAD_COLOR)
+                    if raw_img is not None:
+                        H_raw, W_raw = raw_img.shape[:2]
+                        y_start_raw = int(0.74 * H_raw)
+                        strip_raw = raw_img[y_start_raw:, :]
+                        if strip_raw.size > 0:
+                            strip_2x = cv2.resize(strip_raw, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                            gray_s = cv2.cvtColor(strip_2x, cv2.COLOR_BGR2GRAY)
+                            clahe_s = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                            strip_enh = cv2.cvtColor(clahe_s.apply(gray_s), cv2.COLOR_GRAY2BGR)
+                            res_strip, _ = rapid_engine(strip_enh)
+                            if res_strip:
+                                scale_x = W_orig / float(W_raw)
+                                scale_y = H_orig / float(H_raw)
+                                logger.info(f"Bottom strip pass extracted {len(res_strip)} variable coder items from raw strip")
+                                for item in res_strip:
+                                    bbox_s = item[0]
+                                    text_s = str(item[1]).strip() if len(item) < 3 else str(item[1]).strip()
+                                    conf_s = float(item[2]) if len(item) >= 3 else float(item[1][1])
+                                    if not text_s:
+                                        continue
+                                    orig_bbox = [[round((float(p[0])/2.0) * scale_x, 1), round((float(p[1])/2.0 + y_start_raw) * scale_y, 1)] for p in bbox_s]
+                                    xs = [p[0] for p in orig_bbox]
+                                    ys = [p[1] for p in orig_bbox]
+                                    min_x, max_x = min(xs), max(xs)
+                                    min_y, max_y = min(ys), max(ys)
+                                    w_px = round(max_x - min_x, 2)
+                                    h_px = round(max_y - min_y, 2)
+                                    
+                                    clean_ts = re.sub(r'[^A-Z0-9]', '', text_s.upper())
+                                    is_dup = False
+                                    for ex in blocks:
+                                        ex_rect = ex.get("rect", {})
+                                        ex_cx = ex_rect.get("x", 0) + ex_rect.get("width", 0) / 2.0
+                                        ex_cy = ex_rect.get("y", 0) + ex_rect.get("height", 0) / 2.0
+                                        dist = ((ex_cx - (min_x + w_px/2.0))**2 + (ex_cy - (min_y + h_px/2.0))**2)**0.5
+                                        ex_clean = re.sub(r'[^A-Z0-9]', '', ex.get("text", "").upper())
+                                        if dist < 20 and clean_ts == ex_clean:
+                                            is_dup = True
+                                            break
+                                    if not is_dup:
+                                        blocks.append({
+                                            "id": block_id,
+                                            "text": text_s,
+                                            "confidence": round(float(conf_s), 4),
+                                            "bbox": orig_bbox,
+                                            "rect": {"x": round(float(min_x), 1), "y": round(float(min_y), 1), "width": w_px, "height": h_px},
+                                            "height_px": h_px,
+                                            "width_px": w_px,
+                                            "angle": 0,
+                                            "is_vertical": False
+                                        })
+                                        block_id += 1
+                except Exception as strip_err:
+                    logger.warning(f"Targeted bottom strip pass skipped: {strip_err}")
+
+            # 1c. Targeted Barcode Neighbor Pass (Consumer Care Helpline & Contacts)
+            # In Indian retail packaging, consumer care details (1800 toll-free, emails, complaints)
+            # are standardly placed directly above or adjacent to the barcode.
+            if rapid_engine is not None:
+                try:
+                    bc_det = cv2.barcode.BarcodeDetector()
+                    ok_bc, _, bc_pts = bc_det.detectAndDecode(img)
+                    if ok_bc and bc_pts is not None and len(bc_pts) > 0:
+                        pts_arr = bc_pts[0]
+                        b_xs = [float(p[0]) for p in pts_arr]
+                        b_ys = [float(p[1]) for p in pts_arr]
+                        bx_min, bx_max = min(b_xs), max(b_xs)
+                        by_min, by_max = min(b_ys), max(b_ys)
+                        if by_min > 60:
+                            c_y1 = max(0, int(by_min - 130))
+                            c_y2 = int(by_min)
+                            c_x1 = max(0, int(bx_min - 120))
+                            c_x2 = min(W_orig, int(bx_max + 120))
+                            crop_care = img[c_y1:c_y2, c_x1:c_x2]
+                            if crop_care.size > 0:
+                                crop_care_2x = cv2.resize(crop_care, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                                gray_c = cv2.cvtColor(crop_care_2x, cv2.COLOR_BGR2GRAY)
+                                clahe_c = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                                care_enh = cv2.cvtColor(clahe_c.apply(gray_c), cv2.COLOR_GRAY2BGR)
+                                res_care, _ = rapid_engine(care_enh)
+                                if res_care:
+                                    logger.info(f"Targeted barcode neighbor pass extracted {len(res_care)} blocks")
+                                    for item in res_care:
+                                        bbox_c = item[0]
+                                        text_c = str(item[1]).strip() if len(item) < 3 else str(item[1]).strip()
+                                        conf_c = float(item[2]) if len(item) >= 3 else float(item[1][1])
+                                        if not text_c:
+                                            continue
+                                        orig_bbox = [[round(float(p[0])/2.0 + c_x1, 1), round(float(p[1])/2.0 + c_y1, 1)] for p in bbox_c]
+                                        xs = [p[0] for p in orig_bbox]
+                                        ys = [p[1] for p in orig_bbox]
+                                        min_x, max_x = min(xs), max(xs)
+                                        min_y, max_y = min(ys), max(ys)
+                                        w_px = round(max_x - min_x, 2)
+                                        h_px = round(max_y - min_y, 2)
+                                        clean_tc = re.sub(r'[^A-Z0-9]', '', text_c.upper())
+                                        is_dup = False
+                                        for ex in blocks:
+                                            ex_rect = ex.get("rect", {})
+                                            ex_cx = ex_rect.get("x", 0) + ex_rect.get("width", 0) / 2.0
+                                            ex_cy = ex_rect.get("y", 0) + ex_rect.get("height", 0) / 2.0
+                                            dist = ((ex_cx - (min_x + w_px/2.0))**2 + (ex_cy - (min_y + h_px/2.0))**2)**0.5
+                                            ex_clean = re.sub(r'[^A-Z0-9]', '', ex.get("text", "").upper())
+                                            if dist < 20 and clean_tc == ex_clean:
+                                                is_dup = True
+                                                break
+                                        if not is_dup:
+                                            blocks.append({
+                                                "id": block_id,
+                                                "text": text_c,
+                                                "confidence": round(float(conf_c), 4),
+                                                "bbox": orig_bbox,
+                                                "rect": {"x": round(float(min_x), 1), "y": round(float(min_y), 1), "width": w_px, "height": h_px},
+                                                "height_px": h_px,
+                                                "width_px": w_px,
+                                                "angle": 0,
+                                                "is_vertical": False
+                                            })
+                                            block_id += 1
+                except Exception as bc_err:
+                    logger.warning(f"Targeted barcode neighbor pass skipped: {bc_err}")
         except Exception as err:
             logger.error(f"RapidOCR error: {err}. Trying EasyOCR fallback...")
             blocks = []

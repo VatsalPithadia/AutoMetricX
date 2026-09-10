@@ -1,0 +1,9 @@
+﻿search-path = ["backend"]
+project-includes = ["backend/**/*.py"]
+project-excludes = [
+    ".venv/**",
+    "**/__pycache__/**",
+    "frontend/**",
+    "**/node_modules/**"
+]
+ignore-missing-imports = ["*"]

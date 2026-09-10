@@ -99,7 +99,7 @@ class LMPCPdfReportGenerator:
             bottomMargin=36
         )
 
-        story = []
+        story: List[Any] = []
 
         filename = scan_result.get("filename", "label_photo.jpg")
         saved_file = scan_result.get("saved_file") or filename

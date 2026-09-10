@@ -340,6 +340,45 @@ class LMPCRuleEngine:
             "explanation": explanation
         })
 
+        # --- Rule 9 (Informational): FSSAI License / Registration Number ---
+        # FSSAI license is mandatory only for food businesses under the Food Safety & Standards Act.
+        # It is NOT a universal LMPC (Legal Metrology) declaration required on every packaged commodity.
+        # Absence does NOT count as a FAIL or penalise the compliance score.
+        fssai_field = classified_fields.get("fssai_number")
+        total_checked += 1
+        if fssai_field and fssai_field.get("license_number"):
+            lic_num = fssai_field["license_number"]
+            is_valid_14 = fssai_field.get("is_valid_14_digit", False)
+            conf = fssai_field.get("confidence", 0.80)
+            status = "PASS"
+            found_val = lic_num
+            if is_valid_14 and conf >= 0.60:
+                explanation = f"FSSAI License No. ({lic_num}) detected and appears valid (14-digit format)."
+            else:
+                explanation = f"FSSAI-format number ({lic_num}) detected — verify full 14-digit validity against FSSAI portal."
+            severity = "NONE"
+            total_passed += 1
+        else:
+            # Not found — treat as Not Applicable, not as FAIL.
+            # This does NOT decrement the compliance score.
+            status = "NOT_APPLICABLE"
+            found_val = None
+            explanation = "FSSAI License / Registration Number not detected. This is only required for food businesses — not applicable to all packaged commodities under LMPC."
+            severity = "NONE"
+            # Count as a half-pass so the denominator doesn't unfairly penalise non-food products
+            total_low_conf += 1
+
+        evaluations.append({
+            "rule_id": "LMPC-R6-FSSAI",
+            "clause": "FSSAI / FSS Act (Informational)",
+            "name": "FSSAI License / Registration No.",
+            "declaration": "fssai_number",
+            "status": status,
+            "severity": severity,
+            "found_value": found_val,
+            "explanation": explanation
+        })
+
         # Weighted Score & Overall Status Calculation
         score = round(((total_passed + 0.5 * total_low_conf) / total_checked) * 100.0, 1)
         if total_failed == 0 and total_low_conf == 0:

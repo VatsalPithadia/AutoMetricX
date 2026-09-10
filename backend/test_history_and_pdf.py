@@ -33,6 +33,7 @@ def test_history_and_pdf_features():
     ]
 
     scanned_ids = []
+    result_payload = None
 
     # 2. Perform 3 scans and populate database
     for fname in test_files:
@@ -119,7 +120,7 @@ def test_history_and_pdf_features():
     print("\n--- Testing PDF Exporter with Embedded Label Photo ---")
     pdf_gen = LMPCPdfReportGenerator()
     
-    sample_scan = result_payload
+    sample_scan = result_payload if result_payload is not None else {}
     pdf_bytes = pdf_gen.generate_pdf_bytes(sample_scan)
     
     pdf_out_path = os.path.join(os.path.dirname(__file__), "pdf_exports", "sample_with_photo.pdf")

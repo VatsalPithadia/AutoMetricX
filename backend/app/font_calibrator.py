@@ -9,14 +9,16 @@ class FontCalibrator:
     Physical Scale Calibration & Font Size Measurement Engine for Legal Metrology.
     
     Converts OCR bounding box pixel heights to physical letter heights in millimeters (mm):
-    - Barcode Calibration: Detects EAN-13 barcodes (standard physical width = 31.35mm).
+    - Barcode Calibration: Detects EAN-13 barcodes (standard physical width = 37.29mm SC2 nominal).
     - Resolution Scale Fallback: Uses camera resolution metadata.
     - Rule 7(3): Package Weight Tier Font Size Verification (1.0mm, 2.0mm, 4.0mm, 6.0mm).
     - Rule 9(1): MRP Visual Prominence Ratio Check (h_mrp / h_body >= 1.2x).
     """
 
     # Standard EAN-13 Barcode Nominal Physical Width in mm
-    EAN13_STANDARD_WIDTH_MM = 31.35
+    # SC2 magnification factor (1.0x) is the most common real-world consumer goods barcode size.
+    # SC0 minimum = 26.73mm, SC2 nominal = 37.29mm, SC6 maximum = 52.50mm.
+    EAN13_STANDARD_WIDTH_MM = 37.29
 
     def __init__(self):
         pass
@@ -24,7 +26,7 @@ class FontCalibrator:
     def estimate_px_to_mm_scale(self, image: Optional[np.ndarray], metadata: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Tuple[float, str]:
         """
         Estimates the pixels-per-millimeter (px/mm) scale factor across diverse packaging conditions:
-        - OpenCV BarcodeDetector & PyZbar 1D barcode detection (standard physical width ~31.35mm - 37.29mm)
+        - OpenCV BarcodeDetector & PyZbar 1D barcode detection (EAN-13 standard physical width = 37.29mm SC2)
         - OCR Barcode Number digit span detection (~30mm)
         - Text-Span ROI Scale Model (Label Surface Width ~90mm)
         - Canvas Resolution Fallback
@@ -43,9 +45,9 @@ class FontCalibrator:
                         w2 = float(np.linalg.norm(p[0] - p[3]))
                         barcode_w_px = max(w1, w2)
                         if barcode_w_px > 30:
-                            scale = barcode_w_px / 37.29
-                            logger.info(f"Calibrated physical scale via OpenCV BarcodeDetector: {scale:.2f} px/mm ({barcode_w_px:.1f}px = 37.29mm)")
-                            return float(np.clip(scale, 5.0, 35.0)), f"Barcode Detection ({int(barcode_w_px)}px = EAN-13)"
+                            scale = barcode_w_px / self.EAN13_STANDARD_WIDTH_MM
+                            logger.info(f"Calibrated physical scale via OpenCV BarcodeDetector: {scale:.2f} px/mm ({barcode_w_px:.1f}px = {self.EAN13_STANDARD_WIDTH_MM}mm EAN-13 SC2)")
+                            return float(np.clip(scale, 5.0, 35.0)), f"Barcode Detection ({int(barcode_w_px)}px = EAN-13 SC2 {self.EAN13_STANDARD_WIDTH_MM}mm)"
             except Exception as err:
                 logger.debug(f"OpenCV barcode detector skipped: {err}")
 
@@ -214,7 +216,7 @@ class FontCalibrator:
         median_body_line_h = float(np.median(all_block_heights)) if all_block_heights else 25.0
 
         # Calculate font height in mm for each classified declaration
-        fields_font_mm = {}
+        fields_font_mm: Dict[str, Optional[float]] = {}
         for field_name in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name"]:
             field_obj = classified_fields.get(field_name)
             if field_obj and isinstance(field_obj, dict):

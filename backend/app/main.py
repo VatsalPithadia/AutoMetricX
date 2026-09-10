@@ -9,13 +9,9 @@ import cv2
 import numpy as np
 from contextlib import asynccontextmanager
 from typing import List, Optional
-# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
-# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
-# pyrefly: ignore [missing-import]
 from fastapi.responses import JSONResponse, Response
-# pyrefly: ignore [missing-import]
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -23,7 +19,7 @@ logger = logging.getLogger("metrolens.main")
 
 from app.database import engine, get_db, Base
 from app.models import ScanRecord
-from app.ocr_engine import extract_text_from_image, get_rapid_ocr
+from app.ocr_engine import extract_text_from_image, get_rapid_ocr, preprocess_image
 from app.classifier import FieldClassifier
 from app.rule_engine import LMPCRuleEngine
 from app.pdf_generator import LMPCPdfReportGenerator
@@ -108,14 +104,25 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     ocr_result = extract_text_from_image(contents)
     ocr_blocks = ocr_result.get("blocks", [])
 
+    # Produce an OCR-resolution image for font calibration.
+    # CRITICAL: OCR block bounding boxes are in the resized (max 1600px) coordinate space.
+    # Barcode detection for px/mm calibration MUST use the same resolution image,
+    # otherwise the scale factor is computed in full-res pixels but applied to resized-pixel
+    # heights — causing font_height_mm to be systematically under-reported.
+    try:
+        ocr_res_img, _ = preprocess_image(contents, max_dimension=1600, apply_clahe=False, apply_deskew=False)
+    except Exception:
+        ocr_res_img = cv_img  # safe fallback
+
     # 2. Field classification
     classified_fields = classifier_engine.classify_blocks(ocr_blocks)
 
     # 3. LMPC Rule Engine evaluation with font calibration
+    # Pass the OCR-resolution image so barcode px measurement matches OCR block coordinate space
     compliance_report = rule_checker.evaluate_compliance(
         classified_fields,
         ocr_blocks,
-        image=cv_img,
+        image=ocr_res_img,
         image_metadata=ocr_result.get("image_metadata")
     )
 
@@ -349,7 +356,7 @@ def get_scan_detail(scan_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Scan record not found")
     
     try:
-        report_data = json.loads(scan.full_report_json)
+        report_data = json.loads(str(scan.full_report_json))
         report_data["scan_id"] = scan.id
         return report_data
     except Exception as err:
@@ -366,7 +373,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
     
     # Delete uploaded image file from disk if present
     if scan.image_filename:
-        file_path = os.path.join(UPLOAD_DIR, scan.image_filename)
+        file_path = os.path.join(UPLOAD_DIR, str(scan.image_filename))
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -385,7 +392,7 @@ def delete_all_scans(db: Session = Depends(get_db)):
     scans = db.query(ScanRecord).all()
     for s in scans:
         if s.image_filename:
-            file_path = os.path.join(UPLOAD_DIR, s.image_filename)
+            file_path = os.path.join(UPLOAD_DIR, str(s.image_filename))
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)
