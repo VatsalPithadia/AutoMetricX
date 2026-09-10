@@ -44,11 +44,17 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend
-# NOTE: allow_origins=["*"] is incompatible with allow_credentials=True per
-# the Fetch spec — browsers reject such responses. Use explicit origins instead.
+# Origins are read from ALLOWED_ORIGINS env variable (comma-separated) so
+# we can add the Vercel deployment URL without rebuilding the image.
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,https://footwear-dime-squatted.ngrok-free.dev"
+)
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -5,7 +5,7 @@ import ProcessingCard from './components/ProcessingCard';
 import OCRResultView from './components/OCRResultView';
 import HistoryView from './components/HistoryView';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function App() {
   const [backendConnected, setBackendConnected] = useState(false);

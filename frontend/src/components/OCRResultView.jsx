@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls, onResetScan }) {
   const [copied, setCopied] = useState(false);
@@ -18,7 +18,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
   const handleDownloadPdf = async () => {
     setDownloadingPdf(true);
     try {
-      const res = await fetch('http://localhost:8000/export-pdf', {
+      const res = await fetch(`${API_BASE_URL}/export-pdf`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(result)
