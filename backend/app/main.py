@@ -4,12 +4,18 @@ import uuid
 import time
 import asyncio
 import logging
+import datetime
 import cv2
 import numpy as np
+from contextlib import asynccontextmanager
 from typing import List, Optional
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
+# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
+# pyrefly: ignore [missing-import]
 from fastapi.responses import JSONResponse, Response
+# pyrefly: ignore [missing-import]
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -27,16 +33,26 @@ from app.product_checker import ProductConsistencyChecker
 # Create database tables if they do not exist
 Base.metadata.create_all(bind=engine)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-load RapidOCR ONNX engine on startup
+    get_rapid_ocr()
+    yield  # app runs here
+    # (add shutdown cleanup here if needed)
+
 app = FastAPI(
     title="MetroLens API - Legal Metrology OCR & Compliance",
     description="Backend service for MetroLens Legal Metrology Compliance Inspection",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Enable CORS for frontend
+# NOTE: allow_origins=["*"] is incompatible with allow_credentials=True per
+# the Fetch spec — browsers reject such responses. Use explicit origins instead.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,10 +71,6 @@ pdf_generator = LMPCPdfReportGenerator()
 barcode_engine = BarcodeQREngine()
 consistency_checker = ProductConsistencyChecker()
 
-@app.on_event("startup")
-async def startup_event():
-    # Pre-load RapidOCR ONNX engine on startup
-    get_rapid_ocr()
 
 @app.get("/")
 def api_root():
@@ -318,7 +330,7 @@ def list_past_scans(
     return [
         {
             "id": s.id,
-            "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+            "timestamp": (s.timestamp.isoformat() + "Z") if s.timestamp else None,
             "image_filename": s.image_filename,
             "product_name": s.product_name,
             "overall_status": s.overall_status,
@@ -359,7 +371,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
             try:
                 os.remove(file_path)
             except Exception as err:
-                pass
+                logger.warning(f"Could not delete image file '{file_path}': {err}")
 
     db.delete(scan)
     db.commit()

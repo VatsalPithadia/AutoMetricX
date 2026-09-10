@@ -174,7 +174,12 @@ export default function HistoryView({ onSelectScan }) {
                       {scan.product_name || 'Unknown Product'}
                     </td>
                     <td className="py-3 px-4 text-gray-500 font-mono text-[11px]">
-                      {scan.timestamp ? new Date(scan.timestamp).toLocaleString() : '-'}
+                      {scan.timestamp
+                        ? new Date(scan.timestamp).toLocaleString('en-IN', {
+                            day: '2-digit', month: 'short', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit', hour12: true
+                          })
+                        : '-'}
                     </td>
                     <td className="py-3 px-4">
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${getStatusBadge(scan.overall_status)}`}>
