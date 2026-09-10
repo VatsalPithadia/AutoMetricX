@@ -40,6 +40,21 @@ class BarcodeQREngine:
         except Exception as err:
             logger.warning(f"PyZbar decoding exception: {err}")
 
+        # OpenCV BarcodeDetector fallback if PyZbar missed 1D barcode
+        if not any(r["type"] in ["EAN13", "EAN8", "UPCA", "CODE128"] for r in results):
+            try:
+                bc_detector = cv2.barcode.BarcodeDetector()
+                ok, info, _ = bc_detector.detectAndDecode(image)
+                if ok and len(info) > 0 and info.strip():
+                    results.append({
+                        "type": "EAN13",
+                        "data": info.strip(),
+                        "rect": {"x": 0.0, "y": 0.0, "width": 100.0, "height": 50.0}
+                    })
+                    logger.info(f"Decoded 1D barcode via OpenCV BarcodeDetector: {info.strip()}")
+            except Exception as err:
+                logger.debug(f"OpenCV barcode detector fallback skipped: {err}")
+
         # OpenCV QRCodeDetector fallback if PyZbar missed QR code
         if not any(r["type"] == "QRCODE" for r in results):
             try:

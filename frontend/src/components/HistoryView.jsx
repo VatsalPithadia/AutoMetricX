@@ -46,6 +46,32 @@ export default function HistoryView({ onSelectScan }) {
     }
   };
 
+  const handleDeleteScan = async (scanId, productName) => {
+    if (!window.confirm(`Are you sure you want to delete scan #${scanId} (${productName || 'Unknown'}) and remove its uploaded image?`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/scans/${scanId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete scan');
+      fetchScans();
+    } catch (err) {
+      alert('Error deleting scan: ' + err.message);
+    }
+  };
+
+  const handleClearAllHistory = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL past scans and remove all uploaded images? This action cannot be undone.')) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/scans`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to clear history');
+      fetchScans();
+    } catch (err) {
+      alert('Error clearing history: ' + err.message);
+    }
+  };
+
   const getStatusBadge = (status) => {
     if (status === 'COMPLIANT') {
       return 'bg-emerald-100 text-emerald-800 border-emerald-200';
@@ -65,15 +91,25 @@ export default function HistoryView({ onSelectScan }) {
           <div>
             <h2 className="text-xl font-bold text-gray-900">Past Audit History</h2>
             <p className="text-xs text-gray-500">
-              Persistent repository of scanned products and LMPC compliance reports.
+              Repository of scanned labels and LMPC compliance reports. Local images stored in <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">backend/uploads</code>
             </p>
           </div>
-          <button
-            onClick={fetchScans}
-            className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold cursor-pointer"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchScans}
+              className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold cursor-pointer"
+            >
+              Refresh
+            </button>
+            {scans.length > 0 && (
+              <button
+                onClick={handleClearAllHistory}
+                className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold cursor-pointer"
+              >
+                Clear All History
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Search & Status Filter Controls */}
@@ -123,7 +159,7 @@ export default function HistoryView({ onSelectScan }) {
                   <th className="py-2.5 px-4">Date / Time</th>
                   <th className="py-2.5 px-4">Status</th>
                   <th className="py-2.5 px-4">Score</th>
-                  <th className="py-2.5 px-4 text-right">Action</th>
+                  <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-gray-900">
@@ -149,12 +185,21 @@ export default function HistoryView({ onSelectScan }) {
                       {scan.compliance_score}%
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleRowClick(scan.id); }}
-                        className="px-3 py-1 rounded bg-gray-900 hover:bg-gray-800 text-white font-medium text-[11px]"
-                      >
-                        View Report
-                      </button>
+                      <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleRowClick(scan.id)}
+                          className="px-2.5 py-1 rounded bg-gray-900 hover:bg-gray-800 text-white font-medium text-[11px] cursor-pointer"
+                        >
+                          View Report
+                        </button>
+                        <button
+                          onClick={() => handleDeleteScan(scan.id, scan.product_name)}
+                          className="px-2 py-1 rounded bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-medium text-[11px] cursor-pointer"
+                          title="Delete scan and uploaded image"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

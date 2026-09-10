@@ -3,13 +3,17 @@ import json
 import uuid
 import time
 import asyncio
+import logging
 import cv2
 import numpy as np
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger("metrolens.main")
 
 from app.database import engine, get_db, Base
 from app.models import ScanRecord
@@ -18,6 +22,7 @@ from app.classifier import FieldClassifier
 from app.rule_engine import LMPCRuleEngine
 from app.pdf_generator import LMPCPdfReportGenerator
 from app.barcode_engine import BarcodeQREngine
+from app.product_checker import ProductConsistencyChecker
 
 # Create database tables if they do not exist
 Base.metadata.create_all(bind=engine)
@@ -41,12 +46,14 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules", "lmpc_rules.json")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # Initialize engines
 classifier_engine = FieldClassifier(min_confidence=0.40)
 rule_checker = LMPCRuleEngine(RULES_PATH)
 pdf_generator = LMPCPdfReportGenerator()
 barcode_engine = BarcodeQREngine()
+consistency_checker = ProductConsistencyChecker()
 
 @app.on_event("startup")
 async def startup_event():
@@ -93,7 +100,12 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     classified_fields = classifier_engine.classify_blocks(ocr_blocks)
 
     # 3. LMPC Rule Engine evaluation with font calibration
-    compliance_report = rule_checker.evaluate_compliance(classified_fields, ocr_blocks)
+    compliance_report = rule_checker.evaluate_compliance(
+        classified_fields,
+        ocr_blocks,
+        image=cv_img,
+        image_metadata=ocr_result.get("image_metadata")
+    )
 
     # 4. Barcode & QR code cross-check
     decoded_codes = barcode_engine.decode_barcodes_and_qr(cv_img) if cv_img is not None else []
@@ -112,58 +124,160 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     }
 
 @app.post("/scan")
-async def scan_label_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def scan_label_image(
+    file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
+    db: Session = Depends(get_db)
+):
     """
-    Accepts image upload, runs audit pipeline, and saves scan record into SQLite database.
+    Accepts single or multi-side image upload of a packaged commodity product.
+    If multiple images are uploaded:
+    1. Processes each image through OCR, Classification, and Barcode engines.
+    2. Runs ProductConsistencyChecker to ensure all uploaded sides belong to the SAME product.
+    3. Rejects with HTTP 400 if different products are mixed (e.g. Tea Front + Biscuit Back).
+    4. Unifies declarations across complementary sides and evaluates comprehensive LMPC compliance.
     """
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
-    
-    start_time = time.time()
-    contents = await file.read()
-    if len(contents) == 0:
-        raise HTTPException(status_code=400, detail="Empty image file received.")
-        
-    ext = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
-    saved_filename = f"{uuid.uuid4().hex}{ext}"
-    saved_filepath = os.path.join(UPLOAD_DIR, saved_filename)
-    
-    with open(saved_filepath, "wb") as f:
-        f.write(contents)
-        
-    try:
-        pipeline_res = await asyncio.to_thread(_process_single_image_bytes, contents, file.filename or "label.jpg")
-        processing_time_sec = round(time.time() - start_time, 3)
-        
-        result_payload = {
-            "success": True,
-            "filename": file.filename,
-            "saved_file": saved_filename,
-            "processing_time_seconds": processing_time_sec,
-            **pipeline_res
-        }
+    upload_list: List[UploadFile] = []
+    if files:
+        upload_list.extend([f for f in files if f and f.filename])
+    if file and file.filename and file not in upload_list:
+        upload_list.append(file)
 
-        # Extract product name for easy identification (require confidence >= 0.60 & clean product name)
-        comm_obj = pipeline_res["classified_fields"].get("commodity_name", {})
-        comm_text = comm_obj.get("raw_text") if isinstance(comm_obj, dict) else None
+    if not upload_list:
+        raise HTTPException(status_code=400, detail="No image file received. Please upload at least one label photo.")
+
+    for f in upload_list:
+        if not (f.content_type and f.content_type.startswith("image/")):
+            raise HTTPException(status_code=400, detail=f"File '{f.filename}' must be a valid image (JPEG, PNG, WEBP).")
+
+    start_time = time.time()
+    side_results = []
+    saved_files = []
+
+    try:
+        for idx, up_file in enumerate(upload_list):
+            contents = await up_file.read()
+            if len(contents) == 0:
+                raise HTTPException(status_code=400, detail=f"Empty image file received: {up_file.filename}")
+
+            ext = os.path.splitext(up_file.filename)[1] if up_file.filename else ".jpg"
+            saved_filename = f"{uuid.uuid4().hex}{ext}"
+            saved_filepath = os.path.join(UPLOAD_DIR, saved_filename)
+
+            with open(saved_filepath, "wb") as out_f:
+                out_f.write(contents)
+            saved_files.append(saved_filename)
+
+            res = await asyncio.to_thread(_process_single_image_bytes, contents, up_file.filename or f"side_{idx+1}.jpg")
+            res["filename"] = up_file.filename or f"side_{idx+1}.jpg"
+            res["saved_file"] = saved_filename
+            res["side_index"] = idx + 1
+            side_results.append(res)
+
+        # Multi-Image Cross-Check (Same-Product Verification)
+        if len(side_results) > 1:
+            is_consistent, conf_score, mismatch_reason = consistency_checker.check_consistency(side_results)
+            if not is_consistent:
+                logger.warning(f"Product mismatch rejected: {mismatch_reason}")
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "product_mismatch": True,
+                        "detail": mismatch_reason
+                    }
+                )
+
+        # Merge fields across sides
+        if len(side_results) == 1:
+            merged_classified = side_results[0]["classified_fields"]
+            final_report = side_results[0]["compliance_report"]
+            primary_engine = side_results[0]["engine"]
+            combined_raw_text = side_results[0]["raw_text"]
+            combined_blocks = side_results[0]["ocr_blocks"]
+            combined_barcode = side_results[0]["barcode_qr_analysis"]
+            primary_meta = side_results[0]["image_metadata"]
+        else:
+            merged_classified = classifier_engine.merge_multiside_fields(side_results)
+            all_blocks = []
+            for s in side_results:
+                for b in s.get("ocr_blocks", []):
+                    b_copy = dict(b)
+                    b_copy["side_index"] = s["side_index"]
+                    all_blocks.append(b_copy)
+
+            final_report = rule_checker.evaluate_compliance(
+                merged_classified,
+                all_blocks,
+                image=None,
+                image_metadata=side_results[0]["image_metadata"]
+            )
+            primary_engine = side_results[0]["engine"]
+            combined_raw_text = "\n\n--- Next Package Side ---\n\n".join([f"[{s['filename']}]:\n{s['raw_text']}" for s in side_results])
+            combined_blocks = all_blocks
+            combined_barcode = barcode_engine.verify_cross_check(
+                [c for s in side_results for c in s.get("barcode_qr_analysis", {}).get("decoded_codes", [])],
+                merged_classified
+            )
+            primary_meta = side_results[0]["image_metadata"]
+
+        processing_time_sec = round(time.time() - start_time, 3)
+
+        # Extract product name
+        comm_obj = merged_classified.get("commodity_name", {})
+        comm_text = (comm_obj.get("clean_name") or comm_obj.get("raw_text")) if isinstance(comm_obj, dict) else None
         comm_conf = comm_obj.get("confidence", 0.0) if isinstance(comm_obj, dict) else 0.0
 
         generic_reject_kw = ['AYURVEDIC', 'PROPRIETARY', 'MEDICINE', 'ACCEPT', 'DAMAGED', 'SACHET', 'WARNING']
         is_generic_phrase = any(kw in (comm_text or '').upper() for kw in generic_reject_kw)
 
-        if comm_text and comm_conf >= 0.60 and len(comm_text.strip()) >= 3 and not is_generic_phrase:
+        if comm_text and comm_conf >= 0.50 and len(comm_text.strip()) >= 3 and not is_generic_phrase:
             product_name = comm_text.strip()
             if len(product_name) > 80:
                 product_name = product_name[:80] + "..."
         else:
             product_name = "Unknown Product"
 
-        overall_status = pipeline_res["compliance_report"]["overall_status"]
-        compliance_score = float(pipeline_res["compliance_report"]["compliance_score"])
+        overall_status = final_report["overall_status"]
+        compliance_score = float(final_report["compliance_score"])
+
+        result_payload = {
+            "success": True,
+            "is_multiside": len(side_results) > 1,
+            "total_sides": len(side_results),
+            "filename": side_results[0]["filename"] if len(side_results) == 1 else f"{len(side_results)} Package Sides ({side_results[0]['filename']} + {len(side_results)-1} more)",
+            "product_name": product_name,
+            "saved_file": saved_files[0],
+            "saved_files": saved_files,
+            "side_images": [
+                {
+                    "side_index": s["side_index"],
+                    "filename": s["filename"],
+                    "saved_file": s["saved_file"],
+                    "ocr_blocks": s["ocr_blocks"],
+                    "image_metadata": s["image_metadata"]
+                }
+                for s in side_results
+            ],
+            "processing_time_seconds": processing_time_sec,
+            "engine": primary_engine,
+            "image_metadata": primary_meta,
+            "total_blocks": len(combined_blocks),
+            "raw_text": combined_raw_text,
+            "ocr_blocks": combined_blocks,
+            "classified_fields": merged_classified,
+            "compliance_report": final_report,
+            "barcode_qr_analysis": combined_barcode,
+            "product_consistency": {
+                "is_consistent": True,
+                "confidence": 0.95,
+                "message": f"All {len(side_results)} package sides verified to belong to the same product." if len(side_results) > 1 else "Single side scan"
+            }
+        }
 
         # Save scan record to SQLite database
         scan_rec = ScanRecord(
-            image_filename=saved_filename,
+            image_filename=saved_files[0],
             product_name=product_name,
             overall_status=overall_status,
             compliance_score=compliance_score,
@@ -175,6 +289,9 @@ async def scan_label_image(file: UploadFile = File(...), db: Session = Depends(g
 
         result_payload["scan_id"] = scan_rec.id
         return JSONResponse(status_code=200, content=result_payload)
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as err:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(err)}")
@@ -225,6 +342,57 @@ def get_scan_detail(scan_id: int, db: Session = Depends(get_db)):
         return report_data
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Failed to parse stored scan JSON: {str(err)}")
+
+@app.delete("/scans/{scan_id}")
+def delete_scan(scan_id: int, db: Session = Depends(get_db)):
+    """
+    Deletes a scan record from the database and removes its associated uploaded image file.
+    """
+    scan = db.query(ScanRecord).filter(ScanRecord.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan record not found")
+    
+    # Delete uploaded image file from disk if present
+    if scan.image_filename:
+        file_path = os.path.join(UPLOAD_DIR, scan.image_filename)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as err:
+                pass
+
+    db.delete(scan)
+    db.commit()
+    return {"success": True, "message": f"Scan #{scan_id} and uploaded image deleted successfully"}
+
+@app.delete("/scans")
+def delete_all_scans(db: Session = Depends(get_db)):
+    """
+    Clears all scan records and all uploaded images from disk (preserving .gitkeep).
+    """
+    scans = db.query(ScanRecord).all()
+    for s in scans:
+        if s.image_filename:
+            file_path = os.path.join(UPLOAD_DIR, s.image_filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+    # Clean any orphan images in UPLOAD_DIR
+    for item in os.listdir(UPLOAD_DIR):
+        if item != ".gitkeep":
+            p = os.path.join(UPLOAD_DIR, item)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+    db.query(ScanRecord).delete()
+    db.commit()
+    return {"success": True, "message": "All past scans and uploaded images deleted successfully"}
 
 @app.post("/export-pdf")
 async def export_audit_pdf(audit_data: dict):

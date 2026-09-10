@@ -1,5 +1,5 @@
 {
-  "timestamp": 1788887934.3549643,
+  "timestamp": 1788950864.0665178,
   "total_test_images": 6,
   "total_detected_blocks": 259,
   "total_suspicious_matches": 0,
@@ -16,9 +16,9 @@
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 87.5,
       "suspicious_flags": [],
-      "processing_time_sec": 12.99,
+      "processing_time_sec": 6.56,
       "classified_fields": {
-        "mrp": "MRP Rs 30.00",
+        "mrp": "MRP \u20b9 30.0",
         "net_quantity": "Net Wt 120g",
         "expiry_date": "PKD: DEC 2025 EXP: JUN 2026",
         "manufacturer_details": "Manufactured by.Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604",
@@ -38,9 +38,9 @@
       "low_conf_blocks": 3,
       "confident_declarations": 3,
       "overall_status": "NON_COMPLIANT",
-      "compliance_score": 50.0,
+      "compliance_score": 56.2,
       "suspicious_flags": [],
-      "processing_time_sec": 32.88,
+      "processing_time_sec": 10.53,
       "classified_fields": {
         "manufacturer_details": "Manufactured &Packed By:",
         "consumer_care": "CUSTOMERCARE NO.:9409200015 E-mail:info@shriharimasala.com",
@@ -57,16 +57,16 @@
       "total_detected_blocks": 31,
       "high_conf_blocks": 23,
       "low_conf_blocks": 8,
-      "confident_declarations": 3,
+      "confident_declarations": 2,
       "overall_status": "NON_COMPLIANT",
-      "compliance_score": 50.0,
+      "compliance_score": 43.8,
       "suspicious_flags": [],
-      "processing_time_sec": 28.43,
+      "processing_time_sec": 8.15,
       "classified_fields": {
-        "manufacturer_details": "Pa OTHER",
-        "consumer_care": "consumer.2.co@gsk.com GSK Consumer Relations,",
+        "consumer_care": "consumer.2.co@gsk.com",
+        "fssai_number": "1901571006861",
         "commodity_name": "AYURVEDICPROPRIETARYMEDICINE",
-        "unclassified_blocks_count": 26
+        "unclassified_blocks_count": 29
       }
     },
     {
@@ -75,20 +75,20 @@
       "image_size": "1200x1600",
       "original_size": "3060x4080",
       "total_detected_blocks": 59,
-      "high_conf_blocks": 54,
-      "low_conf_blocks": 5,
+      "high_conf_blocks": 53,
+      "low_conf_blocks": 6,
       "confident_declarations": 4,
       "overall_status": "PARTIALLY_COMPLIANT",
-      "compliance_score": 62.5,
+      "compliance_score": 68.8,
       "suspicious_flags": [],
-      "processing_time_sec": 37.12,
+      "processing_time_sec": 10.01,
       "classified_fields": {
         "net_quantity": "1-05-26 50g",
         "manufacturer_details": "Manufactured&Packed By:",
         "consumer_care": "E-mail:info@shriharimasala.com CUSTOMER CARE NO.:94092 00015",
         "fssai_number": "10715016000063",
         "commodity_name": "SHRI HARI MASALA",
-        "unclassified_blocks_count": 53
+        "unclassified_blocks_count": 52
       }
     },
     {
@@ -101,18 +101,18 @@
       "low_conf_blocks": 4,
       "confident_declarations": 6,
       "overall_status": "PARTIALLY_COMPLIANT",
-      "compliance_score": 87.5,
+      "compliance_score": 93.8,
       "suspicious_flags": [],
-      "processing_time_sec": 22.74,
+      "processing_time_sec": 7.29,
       "classified_fields": {
-        "mrp": "MRP F23.00",
+        "mrp": "MRP \u20b9 2026.0",
         "net_quantity": "17g",
         "mfg_date": "C25J05E 0CT.2025 SEP.2026F23.00",
-        "manufacturer_details": "O Manufactured &Packed by: AVEER FOODS LTD",
-        "consumer_care": "Suhana Do not buy/consume puffedpack suhanacare@suhana.co.in",
+        "manufacturer_details": "Manufactured &Packed by: AVEER FOODS LTD",
+        "consumer_care": "suhanacare@suhana.co.in",
         "fssai_number": "11522997000170",
-        "commodity_name": "Soya Sauce",
-        "unclassified_blocks_count": 78
+        "commodity_name": "Suhana",
+        "unclassified_blocks_count": 81
       }
     },
     {
@@ -127,9 +127,9 @@
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 87.5,
       "suspicious_flags": [],
-      "processing_time_sec": 8.2,
+      "processing_time_sec": 4.4,
       "classified_fields": {
-        "mrp": "MRP Rs 185.00",
+        "mrp": "MRP \u20b9 185.0",
         "net_quantity": "NetQuantity.250g",
         "expiry_date": "Mfg Date: NOV 2025 | Expiry Date: OCT 2026",
         "manufacturer_details": "Mfd  Pkd By. Royal Tea Estates Jorhat Assam -785001",

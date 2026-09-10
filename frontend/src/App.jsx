@@ -10,10 +10,11 @@ const API_BASE_URL = 'http://localhost:8000';
 export default function App() {
   const [backendConnected, setBackendConnected] = useState(false);
   const [currentNav, setCurrentNav] = useState('scan'); // 'scan' | 'history'
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedImages, setSelectedImages] = useState([]); // Array of image objects
   const [isScanning, setIsScanning] = useState(false);
   const [ocrResult, setOcrResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [mismatchError, setMismatchError] = useState(null); // Product mismatch rejection detail
 
   // Poll backend health endpoint on load
   useEffect(() => {
@@ -36,14 +37,24 @@ export default function App() {
   }, []);
 
   const handleStartScan = async () => {
-    if (!selectedImage || !selectedImage.file) return;
+    if (!selectedImages || selectedImages.length === 0) return;
 
     setIsScanning(true);
     setErrorMsg(null);
+    setMismatchError(null);
     setOcrResult(null);
 
     const formData = new FormData();
-    formData.append('file', selectedImage.file);
+
+    if (selectedImages.length === 1) {
+      // Single image — use 'file' parameter (FastAPI accepts either)
+      formData.append('file', selectedImages[0].file, selectedImages[0].name);
+    } else {
+      // Multiple images — send each as 'files' list entries
+      selectedImages.forEach((img) => {
+        formData.append('files', img.file, img.name);
+      });
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/scan`, {
@@ -51,12 +62,17 @@ export default function App() {
         body: formData,
       });
 
+      const data = await response.json().catch(() => ({}));
+
       if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
+        // Product mismatch rejection (HTTP 400 with product_mismatch: true)
+        if (response.status === 400 && data.product_mismatch) {
+          setMismatchError(data.detail || 'These images appear to be from different products.');
+          return;
+        }
+        throw new Error(data.detail || `Server returned HTTP ${response.status}`);
       }
 
-      const data = await response.json();
       setOcrResult(data);
     } catch (err) {
       console.error('Scan API error:', err);
@@ -67,16 +83,28 @@ export default function App() {
   };
 
   const handleResetScan = () => {
-    setSelectedImage(null);
+    setSelectedImages([]);
     setOcrResult(null);
     setErrorMsg(null);
+    setMismatchError(null);
     setCurrentNav('scan');
   };
 
   const handleSelectHistoricalScan = (fullReport) => {
     setOcrResult(fullReport);
+    setSelectedImages([]);
     setCurrentNav('scan');
   };
+
+  // Build primary preview URL — first selected image preview, or uploaded file URL
+  const primaryPreviewUrl = selectedImages.length > 0
+    ? selectedImages[0].previewUrl
+    : (ocrResult?.saved_file ? `${API_BASE_URL}/uploads/${ocrResult.saved_file}` : null);
+
+  // Build all side preview URLs for multi-side display
+  const sidePreviewUrls = selectedImages.length > 1
+    ? selectedImages.map((img) => img.previewUrl)
+    : null;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col font-sans">
@@ -87,7 +115,7 @@ export default function App() {
         currentNav={currentNav}
         onNavChange={(nav) => {
           if (nav === 'scan' && !ocrResult) {
-            setSelectedImage(null);
+            setSelectedImages([]);
           }
           setCurrentNav(nav);
         }}
@@ -96,10 +124,10 @@ export default function App() {
       {/* Main Container */}
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 space-y-6">
         
-        {/* Error Alert */}
+        {/* General Error Alert */}
         {errorMsg && (
           <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between text-red-800 text-sm">
-            <span>{errorMsg}</span>
+            <span>⚠️ {errorMsg}</span>
             <button
               onClick={() => setErrorMsg(null)}
               className="text-xs px-2.5 py-1 rounded bg-red-100 hover:bg-red-200 text-red-900 font-medium cursor-pointer"
@@ -109,15 +137,49 @@ export default function App() {
           </div>
         )}
 
+        {/* Product Mismatch Rejection Alert */}
+        {mismatchError && (
+          <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-xl space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 font-bold text-lg">
+                ✕
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-amber-900 mb-1">Product Mismatch Detected — Upload Rejected</h3>
+                <p className="text-xs text-amber-800 leading-relaxed">{mismatchError}</p>
+                <p className="text-xs text-amber-700 mt-2 font-medium">
+                  All uploaded images must be different sides of the <strong>same product</strong>. 
+                  Please remove conflicting images and try again.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => { setMismatchError(null); setSelectedImages([]); }}
+                className="px-4 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 cursor-pointer"
+              >
+                Clear & Start Over
+              </button>
+              <button
+                onClick={() => setMismatchError(null)}
+                className="px-4 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 text-xs font-medium hover:bg-amber-50 cursor-pointer"
+              >
+                Dismiss (Edit Images)
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Navigation View Switcher */}
         {currentNav === 'history' ? (
           <HistoryView onSelectScan={handleSelectHistoricalScan} />
         ) : isScanning ? (
-          <ProcessingCard />
+          <ProcessingCard totalImages={selectedImages.length} />
         ) : ocrResult ? (
           <OCRResultView
             result={ocrResult}
-            imagePreviewUrl={selectedImage?.previewUrl || `${API_BASE_URL}/uploads/${ocrResult.saved_file}`}
+            imagePreviewUrl={primaryPreviewUrl}
+            sidePreviewUrls={sidePreviewUrls}
             onResetScan={handleResetScan}
           />
         ) : (
@@ -127,13 +189,14 @@ export default function App() {
                 Product Label Compliance Audit
               </h2>
               <p className="text-sm text-gray-600 max-w-xl mx-auto">
-                Upload a packaged product label photo to verify mandatory legal declarations, font letter sizes, and barcode accuracy against Legal Metrology Rules.
+                Upload one or more photos of a packaged product label to verify mandatory legal declarations, 
+                font letter sizes, and barcode accuracy against Legal Metrology Rules.
               </p>
             </div>
 
             <ImageUploader
-              selectedImage={selectedImage}
-              onImageSelected={setSelectedImage}
+              selectedImages={selectedImages}
+              onImagesSelected={setSelectedImages}
               onStartScan={handleStartScan}
               isScanning={isScanning}
             />

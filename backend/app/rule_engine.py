@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger("metrolens.rule_engine")
 
@@ -32,7 +32,13 @@ class LMPCRuleEngine:
         except Exception as err:
             logger.error(f"Error loading LMPC rules JSON: {err}")
 
-    def evaluate_compliance(self, classified_fields: Dict[str, Any], ocr_blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def evaluate_compliance(
+        self,
+        classified_fields: Dict[str, Any],
+        ocr_blocks: List[Dict[str, Any]],
+        image: Optional[Any] = None,
+        image_metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
         Runs comprehensive LMPC compliance verification.
         Returns detailed compliance report with 3-state evaluation per declaration.
@@ -80,9 +86,9 @@ class LMPCRuleEngine:
         # --- Rule 2: Rule 6(1)(b) Commodity Generic Name ---
         comm_field = classified_fields.get("commodity_name")
         total_checked += 1
-        if comm_field and isinstance(comm_field, dict) and comm_field.get("raw_text"):
+        if comm_field and isinstance(comm_field, dict) and (comm_field.get("clean_name") or comm_field.get("raw_text")):
             conf = comm_field.get("confidence", 0.50)
-            found_val = comm_field["raw_text"]
+            found_val = comm_field.get("clean_name") or comm_field["raw_text"]
             if conf >= 0.60:
                 status = "PASS"
                 explanation = f"Generic commodity name / product identity ('{found_val}') is clearly declared."
@@ -118,10 +124,10 @@ class LMPCRuleEngine:
             conf = net_qty.get("confidence", 0.80)
             num_val = net_qty.get("numeric_value", "")
             unit_val = net_qty.get("unit", "")
-            found_val = f"{num_val} {unit_val}".strip() or net_qty.get("raw_text", "")
+            found_val = net_qty.get("formatted_value") or net_qty.get("raw_text") or f"{num_val} {unit_val}".strip()
             if net_qty.get("is_standard_unit", True) and conf >= 0.60:
                 status = "PASS"
-                explanation = f"Net Quantity declared using compliant standard unit '{net_qty['unit']}'."
+                explanation = f"Net Quantity ('{found_val}') declared using compliant standard unit '{net_qty['unit']}'."
                 severity = "NONE"
                 total_passed += 1
             else:
@@ -148,11 +154,11 @@ class LMPCRuleEngine:
         })
 
         # --- Rule 4: Rule 6(1)(d) Month & Year of Manufacture/Packing ---
-        mfg_date = classified_fields.get("mfg_date") or classified_fields.get("expiry_date")
+        mfg_date = classified_fields.get("mfg_date")
         total_checked += 1
         if mfg_date:
             conf = mfg_date.get("confidence", 0.80)
-            found_val = mfg_date.get("extracted_date") or mfg_date.get("raw_text")
+            found_val = mfg_date.get("raw_text") or mfg_date.get("extracted_date")
             if conf >= 0.60:
                 status = "PASS"
                 explanation = f"Manufacturing / Packing date declaration detected ('{found_val}')."
@@ -164,11 +170,19 @@ class LMPCRuleEngine:
                 severity = "LOW"
                 total_low_conf += 1
         else:
-            status = "FAIL"
-            found_val = None
-            explanation = "Mandatory Month & Year of Manufacture/Packing declaration is missing."
-            severity = "HIGH"
-            total_failed += 1
+            exp_date = classified_fields.get("expiry_date")
+            if exp_date:
+                status = "LOW_CONFIDENCE"
+                found_val = f"Expiry only: {exp_date.get('raw_text')}"
+                explanation = "Expiry date is present, but Month & Year of Manufacture/Packing is missing or separate."
+                severity = "MEDIUM"
+                total_low_conf += 1
+            else:
+                status = "FAIL"
+                found_val = None
+                explanation = "Mandatory Month & Year of Manufacture/Packing declaration is missing."
+                severity = "HIGH"
+                total_failed += 1
 
         evaluations.append({
             "rule_id": "LMPC-R6-1d",
@@ -186,16 +200,16 @@ class LMPCRuleEngine:
         total_checked += 1
         if mrp_data:
             conf = mrp_data.get("confidence", 0.80)
+            found_val = mrp_data.get("raw_text") or mrp_data.get("formatted_value")
             if mrp_data.get("has_tax_clause") and conf >= 0.60:
                 status = "PASS"
-                found_val = f"{mrp_data['currency']} {mrp_data['value']} (Incl. of all taxes)"
-                explanation = "Retail Sale Price (MRP) printed with mandatory 'inclusive of all taxes' clause."
+                explanation = f"Retail Sale Price (MRP) printed with mandatory 'inclusive of all taxes' clause ('{found_val}')."
                 severity = "NONE"
                 total_passed += 1
             else:
                 status = "LOW_CONFIDENCE"
-                found_val = f"{mrp_data['currency']} {mrp_data['value']}"
-                explanation = "MRP candidate is present, but mandatory 'inclusive of all taxes' wording or detection confidence is low."
+                found_val = mrp_data.get("raw_text") or mrp_data.get("formatted_value")
+                explanation = f"MRP candidate found ('{found_val}'), but mandatory 'inclusive of all taxes' wording or detection confidence requires review."
                 severity = "MEDIUM"
                 total_low_conf += 1
         else:
@@ -255,11 +269,10 @@ class LMPCRuleEngine:
         calibrator = FontCalibrator()
         
         # Default metadata fallback
-        meta_dummy = {"width": 1200, "height": 900}
-        dummy_img = None
+        meta = image_metadata or {"width": 1200, "height": 900}
         
         legibility_analysis = calibrator.analyze_legibility_and_prominence(
-            dummy_img, meta_dummy, classified_fields, ocr_blocks
+            image, meta, classified_fields, ocr_blocks
         )
         
         total_checked += 1

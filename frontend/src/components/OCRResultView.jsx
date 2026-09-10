@@ -1,14 +1,19 @@
 import React, { useState } from 'react';
 
-export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) {
+const API_BASE_URL = 'http://localhost:8000';
+
+export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls, onResetScan }) {
   const [copied, setCopied] = useState(false);
-  const [showJson, setShowJson] = useState(false);
   const [showBoxes, setShowBoxes] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [activeTab, setActiveTab] = useState('compliance'); // 'compliance' | 'overlay' | 'raw'
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [activeSideIdx, setActiveSideIdx] = useState(0); // For multi-side overlay tab
 
   if (!result) return null;
+
+  const isMultiSide = result.is_multiside === true && result.total_sides > 1;
+  const sideImages = result.side_images || [];
 
   const handleDownloadPdf = async () => {
     setDownloadingPdf(true);
@@ -41,10 +46,23 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const imgMeta = result.image_metadata || { width: 600, height: 400 };
   const report = result.compliance_report || {};
   const classified = result.classified_fields || {};
   const declarations = report.declarations || [];
+
+  // Determine which image + blocks to show in overlay tab
+  const activeOverlaySide = isMultiSide && sideImages.length > activeSideIdx
+    ? sideImages[activeSideIdx]
+    : null;
+  const overlayImageUrl = isMultiSide && activeOverlaySide
+    ? (sidePreviewUrls?.[activeSideIdx] || `${API_BASE_URL}/uploads/${activeOverlaySide.saved_file}`)
+    : imagePreviewUrl;
+  const overlayBlocks = isMultiSide && activeOverlaySide
+    ? activeOverlaySide.ocr_blocks || []
+    : (result.ocr_blocks || []);
+  const overlayMeta = isMultiSide && activeOverlaySide
+    ? activeOverlaySide.image_metadata || result.image_metadata || { width: 600, height: 400 }
+    : result.image_metadata || { width: 600, height: 400 };
 
   const getStatusBadge = (status) => {
     if (status === 'COMPLIANT' || status === 'PASS') {
@@ -64,14 +82,22 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
         
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-xl font-bold text-gray-900">Inspection Report</h2>
               <span className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase ${getStatusBadge(report.overall_status).badge}`}>
                 {report.overall_status || 'NON_COMPLIANT'}
               </span>
+              {isMultiSide && (
+                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
+                  ◈ {result.total_sides}-Side Audit
+                </span>
+              )}
             </div>
             <p className="text-xs text-gray-500 font-mono mt-0.5">
-              File: {result.filename} &bull; Score: {report.compliance_score || 0}% ({report.passed_rules_count || 0}/{report.total_rules_checked || 8} Rules Passed)
+              {isMultiSide
+                ? `${result.total_sides} package sides scanned • Score: ${report.compliance_score || 0}% (${report.passed_rules_count || 0}/${report.total_rules_checked || 8} Rules Passed)`
+                : `File: ${result.filename} • Score: ${report.compliance_score || 0}% (${report.passed_rules_count || 0}/${report.total_rules_checked || 8} Rules Passed)`
+              }
             </p>
           </div>
 
@@ -93,7 +119,15 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
           </div>
         </div>
 
-        {/* Minimal Navigation Tabs */}
+        {/* Multi-Side Consistency Info */}
+        {isMultiSide && result.product_consistency && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+            <span className="font-bold shrink-0">✓ Same-Product Verified:</span>
+            <span>{result.product_consistency.message}</span>
+          </div>
+        )}
+
+        {/* Navigation Tabs */}
         <div className="flex items-center gap-2 border-b border-gray-100 pb-1">
           <button
             onClick={() => setActiveTab('compliance')}
@@ -109,7 +143,7 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
               activeTab === 'overlay' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
-            Label Image & Overlay
+            {isMultiSide ? `Label Images (${result.total_sides} Sides)` : 'Label Image & Overlay'}
           </button>
           <button
             onClick={() => setActiveTab('raw')}
@@ -127,7 +161,7 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
       {activeTab === 'compliance' && (
         <div className="space-y-6">
           
-          {/* FSSAI License & Barcode Verification Box (UPSIDE / ABOVE Metrology Rules) */}
+          {/* FSSAI License & Barcode Verification Box */}
           <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-3 shadow-sm">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -186,6 +220,42 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
             </div>
           </div>
 
+          {/* Extracted Fields Summary — direct classified field values */}
+          <div className="p-4 rounded-xl border border-gray-200 bg-white space-y-3 shadow-sm">
+            <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">Extracted Declaration Values</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-xs">
+              {[
+                { key: 'commodity_name', label: 'Commodity Name', getValue: (f) => f?.clean_name || f?.raw_text },
+                { key: 'net_quantity', label: 'Net Quantity', getValue: (f) => f?.formatted_value || f?.raw_text },
+                { key: 'mrp', label: 'MRP', getValue: (f) => f?.formatted_value || f?.raw_text },
+                { key: 'mfg_date', label: 'Mfg / Packing Date', getValue: (f) => f?.extracted_date || f?.raw_text },
+                { key: 'expiry_date', label: 'Expiry / Best Before', getValue: (f) => f?.extracted_date || f?.raw_text },
+                { key: 'manufacturer_details', label: 'Manufacturer / Packer', getValue: (f) => f?.raw_text },
+                { key: 'consumer_care', label: 'Consumer Care', getValue: (f) => f?.raw_text },
+                { key: 'fssai_number', label: 'FSSAI License', getValue: (f) => f?.license_number || f?.raw_text },
+              ].map(({ key, label, getValue }) => {
+                const fieldObj = classified[key];
+                const value = fieldObj ? getValue(fieldObj) : null;
+                const conf = fieldObj?.confidence;
+                return (
+                  <div key={key} className="p-2.5 rounded-lg border border-gray-100 bg-gray-50 space-y-1">
+                    <div className="text-[10px] font-bold uppercase text-gray-400 tracking-wider">{label}</div>
+                    <div className={`text-xs font-semibold leading-snug ${value ? 'text-gray-900' : 'text-gray-400 italic font-normal'}`}>
+                      {value
+                        ? (value.length > 80 ? value.slice(0, 80) + '…' : value)
+                        : 'Not Detected'}
+                    </div>
+                    {conf !== undefined && value && (
+                      <div className={`text-[9px] font-medium ${conf >= 0.80 ? 'text-emerald-600' : conf >= 0.60 ? 'text-amber-600' : 'text-rose-600'}`}>
+                        {Math.round(conf * 100)}% confidence{fieldObj?.llm_assisted ? ' (AI-assisted)' : fieldObj?.llm_verified ? ' (AI-verified)' : ''}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Legal Metrology Rules Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {declarations.map((decl, idx) => {
@@ -205,7 +275,7 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
                   </div>
 
                   <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
-                    <div className="text-[10px] font-medium text-gray-400 uppercase">Detected Text</div>
+                    <div className="text-[10px] font-medium text-gray-400 uppercase">Detected Value</div>
                     <div className="text-xs font-mono font-semibold text-gray-800 truncate">
                       {decl.found_value || <span className="text-gray-400 font-normal italic">Not Found</span>}
                     </div>
@@ -263,84 +333,113 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
 
       {/* --- TAB 2: Label Image & Bounding Boxes --- */}
       {activeTab === 'overlay' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <div className="lg:col-span-6 bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold text-gray-900 uppercase">Image Overlay</h3>
-              <button
-                onClick={() => setShowBoxes(!showBoxes)}
-                className="text-xs text-gray-600 hover:text-gray-900 underline"
-              >
-                {showBoxes ? 'Hide Overlays' : 'Show Overlays'}
-              </button>
-            </div>
+        <div className="space-y-4">
 
-            <div className="relative bg-gray-50 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center p-2">
-              <div className="relative inline-block max-w-full">
-                <img
-                  src={imagePreviewUrl}
-                  alt="Analyzed Label"
-                  className="max-h-[400px] object-contain rounded block"
-                />
-
-                {showBoxes && result.ocr_blocks && (
-                  <svg
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    viewBox={`0 0 ${imgMeta.width} ${imgMeta.height}`}
-                    preserveAspectRatio="xMidYMid meet"
+          {/* Side Selector for Multi-Side */}
+          {isMultiSide && sideImages.length > 1 && (
+            <div className="flex items-center gap-2 p-3 bg-white border border-gray-200 rounded-xl">
+              <span className="text-xs text-gray-500 font-medium shrink-0">View Side:</span>
+              <div className="flex gap-2 flex-wrap">
+                {sideImages.map((side, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => { setActiveSideIdx(idx); setSelectedBlock(null); }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activeSideIdx === idx
+                        ? 'bg-gray-900 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
                   >
-                    {result.ocr_blocks.map((block) => {
-                      const isSelected = selectedBlock === block.id;
-                      const r = block.rect || { x: 0, y: 0, width: 50, height: 20 };
-                      return (
-                        <g key={block.id} className="pointer-events-auto cursor-pointer" onClick={() => setSelectedBlock(block.id)}>
-                          <rect
-                            x={r.x}
-                            y={r.y}
-                            width={r.width}
-                            height={r.height}
-                            fill={isSelected ? 'rgba(37, 99, 235, 0.2)' : 'rgba(16, 185, 129, 0.15)'}
-                            stroke={isSelected ? '#2563eb' : '#10b981'}
-                            strokeWidth={Math.max(2, Math.round(imgMeta.width / 400))}
-                            rx="2"
-                          />
-                        </g>
-                      );
-                    })}
-                  </svg>
-                )}
+                    Side {idx + 1}{side.filename ? ` (${side.filename.split('.')[0].slice(-12)})` : ''}
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
+          )}
 
-          <div className="lg:col-span-6 bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-            <h3 className="text-xs font-bold text-gray-900 uppercase">Detected Text Regions ({result.total_blocks})</h3>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div className="lg:col-span-6 bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-gray-900 uppercase">
+                  {isMultiSide ? `Side ${activeSideIdx + 1} Image Overlay` : 'Image Overlay'}
+                </h3>
+                <button
+                  onClick={() => setShowBoxes(!showBoxes)}
+                  className="text-xs text-gray-600 hover:text-gray-900 underline"
+                >
+                  {showBoxes ? 'Hide Overlays' : 'Show Overlays'}
+                </button>
+              </div>
 
-            <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden max-h-[400px] overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-white border-b border-gray-200 text-gray-500 font-semibold sticky top-0">
-                  <tr>
-                    <th className="py-2 px-3">#</th>
-                    <th className="py-2 px-3">Text</th>
-                    <th className="py-2 px-3 text-right">Confidence</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {result.ocr_blocks?.map((block) => (
-                    <tr 
-                      key={block.id}
-                      onClick={() => setSelectedBlock(block.id)}
-                      className={`cursor-pointer ${selectedBlock === block.id ? 'bg-blue-50 font-semibold text-blue-900' : 'hover:bg-white'}`}
+              <div className="relative bg-gray-50 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center p-2">
+                <div className="relative inline-block max-w-full">
+                  <img
+                    src={overlayImageUrl}
+                    alt={isMultiSide ? `Package Side ${activeSideIdx + 1}` : 'Analyzed Label'}
+                    className="max-h-[400px] object-contain rounded block"
+                  />
+
+                  {showBoxes && overlayBlocks.length > 0 && (
+                    <svg
+                      className="absolute inset-0 w-full h-full pointer-events-none"
+                      viewBox={`0 0 ${overlayMeta.width} ${overlayMeta.height}`}
+                      preserveAspectRatio="xMidYMid meet"
                     >
-                      <td className="py-1.5 px-3 font-mono text-gray-400">#{block.id}</td>
-                      <td className="py-1.5 px-3 text-gray-900 truncate max-w-xs">{block.text}</td>
-                      <td className="py-1.5 px-3 text-right font-mono text-gray-600">
-                        {(block.confidence * 100).toFixed(0)}%
-                      </td>
+                      {overlayBlocks.map((block) => {
+                        const isSelected = selectedBlock === block.id;
+                        const r = block.rect || { x: 0, y: 0, width: 50, height: 20 };
+                        return (
+                          <g key={block.id} className="pointer-events-auto cursor-pointer" onClick={() => setSelectedBlock(block.id)}>
+                            <rect
+                              x={r.x}
+                              y={r.y}
+                              width={r.width}
+                              height={r.height}
+                              fill={isSelected ? 'rgba(37, 99, 235, 0.2)' : 'rgba(16, 185, 129, 0.15)'}
+                              stroke={isSelected ? '#2563eb' : '#10b981'}
+                              strokeWidth={Math.max(2, Math.round(overlayMeta.width / 400))}
+                              rx="2"
+                            />
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-6 bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <h3 className="text-xs font-bold text-gray-900 uppercase">
+                Detected Text Regions ({overlayBlocks.length})
+              </h3>
+
+              <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden max-h-[400px] overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-white border-b border-gray-200 text-gray-500 font-semibold sticky top-0">
+                    <tr>
+                      <th className="py-2 px-3">#</th>
+                      <th className="py-2 px-3">Text</th>
+                      <th className="py-2 px-3 text-right">Confidence</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {overlayBlocks.map((block) => (
+                      <tr
+                        key={block.id}
+                        onClick={() => setSelectedBlock(block.id)}
+                        className={`cursor-pointer ${selectedBlock === block.id ? 'bg-blue-50 font-semibold text-blue-900' : 'hover:bg-white'}`}
+                      >
+                        <td className="py-1.5 px-3 font-mono text-gray-400">#{block.id}</td>
+                        <td className="py-1.5 px-3 text-gray-900 truncate max-w-xs">{block.text}</td>
+                        <td className="py-1.5 px-3 text-right font-mono text-gray-600">
+                          {(block.confidence * 100).toFixed(0)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -350,7 +449,9 @@ export default function OCRResultView({ result, imagePreviewUrl, onResetScan }) 
       {activeTab === 'raw' && (
         <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-xs font-bold text-gray-900 uppercase">Raw Extracted OCR Text</h3>
+            <h3 className="text-xs font-bold text-gray-900 uppercase">
+              Raw Extracted OCR Text{isMultiSide ? ` (All ${result.total_sides} Sides Combined)` : ''}
+            </h3>
             <button onClick={handleCopyText} className="text-xs text-gray-600 hover:text-gray-900 underline">
               {copied ? 'Copied' : 'Copy Text'}
             </button>

@@ -1,10 +1,15 @@
-import fitz  # PyMuPDF
+# pyrefly: ignore [missing-import]
+import pymupdf as fitz  # PyMuPDF (fitz alias for compatibility)
 import os
 
-pdf_path = r"c:\Users\swapn\OneDrive\Documents\Metrology\backend\pdf_exports\sample_with_photo.pdf"
-out_png_path = r"c:\Users\swapn\OneDrive\Documents\Metrology\backend\pdf_exports\sample_pdf_page1.png"
-artifact_dir = r"C:\Users\swapn\.gemini\antigravity-ide\brain\8d54f7e0-8e2b-47d0-ae6c-914b32542f74"
-artifact_png_path = os.path.join(artifact_dir, "sample_pdf_page1.png")
+# Paths relative to this script's directory (works on any machine)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+pdf_exports_dir = os.path.join(_script_dir, "pdf_exports")
+os.makedirs(pdf_exports_dir, exist_ok=True)
+
+pdf_path = os.path.join(pdf_exports_dir, "sample_with_photo.pdf")
+out_png_path = os.path.join(pdf_exports_dir, "sample_pdf_page1.png")
+artifact_png_path = out_png_path  # Save in same pdf_exports folder
 
 if os.path.exists(pdf_path):
     doc = fitz.open(pdf_path)

@@ -1,7 +1,12 @@
 import re
 import logging
+import numpy as np
 from typing import List, Dict, Any, Optional, Set, Tuple
-from app.llm_extractor import LLMExtractor
+# pyrefly: ignore [missing-import]
+try:
+    from app.llm_extractor import LLMExtractor
+except (ImportError, ModuleNotFoundError):
+    from .llm_extractor import LLMExtractor
 
 try:
     from rapidfuzz import fuzz
@@ -10,6 +15,41 @@ except ImportError:
     HAS_RAPIDFUZZ = False
 
 logger = logging.getLogger("metrolens.classifier")
+
+def _make_multiline_field_dict(blocks_list: List[Dict[str, Any]], raw_text: str, extra_props: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Computes accurate union bounding box, line heights, and representative font size
+    from constituent OCR text lines of multi-line declarations.
+    """
+    xs = [b["rect"]["x"] for b in blocks_list if b.get("rect")]
+    ys = [b["rect"]["y"] for b in blocks_list if b.get("rect")]
+    x2s = [b["rect"]["x"] + b["rect"]["width"] for b in blocks_list if b.get("rect")]
+    y2s = [b["rect"]["y"] + b["rect"]["height"] for b in blocks_list if b.get("rect")]
+
+    min_x = round(float(min(xs)), 1) if xs else 0.0
+    min_y = round(float(min(ys)), 1) if ys else 0.0
+    max_x = round(float(max(x2s)), 1) if x2s else 0.0
+    max_y = round(float(max(y2s)), 1) if y2s else 0.0
+
+    line_heights = [float(b["rect"]["height"]) for b in blocks_list if b.get("rect") and b["rect"].get("height", 0) > 0]
+    if line_heights:
+        font_h_px = round(float(np.median(np.array(line_heights))), 1)
+    elif max_y > min_y and len(blocks_list) > 0:
+        font_h_px = round(float(max_y - min_y) / max(1, len(blocks_list)), 1)
+    else:
+        font_h_px = 25.0
+
+    res = {
+        "raw_text": raw_text,
+        "rect": {"x": min_x, "y": min_y, "width": round(max_x - min_x, 1), "height": round(max_y - min_y, 1)} if xs else None,
+        "bbox": [[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y]] if xs else None,
+        "font_height_px": font_h_px,
+        "line_heights_px": line_heights,
+        "matched_blocks": [{"id": b.get("id"), "text": b.get("text"), "rect": b.get("rect"), "confidence": b.get("confidence")} for b in blocks_list]
+    }
+    res.update(extra_props)
+    return res
+
 
 def fuzzy_match_any(text: str, targets: List[str], min_score: float = 80.0) -> bool:
     """
@@ -61,12 +101,17 @@ class FieldClassifier:
             r'(?:M\.?R\.?P\.?|MR\.?R|MAX(?:IMUM)?\s*RETAIL\s*PRICE|PRICE|RS\.?|₹|\$)\s*[:=.\s]*[₹Rs.]?\s*(\d{1,5}(?:\.\d{1,2})?)',
             re.IGNORECASE
         )
+        # Tightened: requires explicit RS./₹/$ prefix (removed bare 'F'/'R' which matched random words)
         self.price_standalone_pattern = re.compile(
-            r'(?:F|R|RS\.?|₹|\$)\s*(\d{1,4}\.\d{1,2})\b',
+            r'(?:RS\.?|₹|\$)\s*(\d{1,4}\.\d{1,2})\b',
             re.IGNORECASE
         )
         self.tax_clause_pattern = re.compile(
             r'(?:INCL(?:USIVE)?\.?\s*OF\s*ALL\s*TAXES|INCL\.?\s*TAXES|ALL\s*TAXES)',
+            re.IGNORECASE
+        )
+        self.mrp_tax_suffix_pattern = re.compile(
+            r'(?:^|[^\d])(\d{1,5}(?:\.\d{1,2})?)\s*\(?(?:INCL(?:USIVE)?\.?\s*OF\s*ALL\s*TAXES|INCL\.?\s*TAXES|ALL\s*TAXES|PER\s*G|PER\s*KG)',
             re.IGNORECASE
         )
 
@@ -82,20 +127,22 @@ class FieldClassifier:
         # Month normalization (including OCR dot-matrix fixes e.g. 0CT -> OCT)
         self.month_names = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', '0CT', 'NOV', 'DEC']
         self.date_pattern = re.compile(
-            r'\b(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)\s*[\.\s/|-]+\s*(20[1-3][0-9]|[1-3][0-9])\b',
+            r'(?:^|[^A-Za-z0-9])(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)\s*[\.\s/|-]*\s*(20[1-3][0-9]|[1-3][0-9])\b',
             re.IGNORECASE
         )
         self.full_date_pattern = re.compile(
-            r'\b([0-3]?[0-9])[\.\s/|-]+(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)[\.\s/|-]+(20[1-3][0-9]|[1-3][0-9])\b',
+            r'(?:^|[^A-Za-z0-9])([0-3]?[0-9])[\.\s/|-]+(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)[\.\s/|-]*(20[1-3][0-9]|[1-3][0-9])\b',
             re.IGNORECASE
         )
 
-        # FSSAI 14-digit pattern
-        self.fssai_strict_pattern = re.compile(r'\b(1\d{13}|2\d{13})\b')
+        # FSSAI pattern: 14-digit or 13-digit sequence
+        self.fssai_strict_pattern = re.compile(r'\b(1\d{12,13}|2\d{12,13})\b')
 
         # Phone & Email patterns
+        # Tightened: requires a care/helpline keyword OR explicit toll-free (1800) format
+        # This prevents address pin-codes or batch numbers from being mistaken for phone numbers
         self.phone_pattern = re.compile(
-            r'(?:CARE|HELPLINE|NO|TEL|PHONE|CONTACT|CALL|CUSTOMER|CUSTOMERCARE)?\s*[:=.\s]*(\+?\d{2,4}[-\s]?)?(\d{10}|\d{5}\s*\d{5}|\d{4}[-\s]?\d{3}[-\s]?\d{4})',
+            r'(?:(?:CARE|HELPLINE|NO\.?|TEL|PHONE|CONTACT|CALL|TOLL\s*FREE|CUSTOMER(?:\s*CARE)?|CONSUMER(?:\s*CARE)?)\s*[:=.\s]*)?(1800[-\s]?\d{3}[-\s]?\d{4}|1800\d{6,7}|\+91[-\s]?\d{10}|0\d{2,4}[-\s]\d{6,8}|\d{10})\b',
             re.IGNORECASE
         )
         self.email_pattern = re.compile(
@@ -108,6 +155,13 @@ class FieldClassifier:
             r'\b(BATCH|LOT|B\.NO|LIC|LIC\.NO|CODE|BARCODE|FSSAI|SERIAL|SERIES|PKD|MFG|EXP)\b',
             re.IGNORECASE
         )
+        self.commodity_exclude_words = {
+            'QUANTITY', 'NET', 'WT', 'WEIGHT', 'VOL', 'VOLUME', 'MRP', 'PRICE', 'RS',
+            'BATCH', 'LOT', 'B.NO', 'MFD', 'EXP', 'USEBY', 'USE BY', 'PKD', 'PACKED',
+            'INGREDIENTS', 'NUTRITION', 'NUTRITIONAL', 'INFORMATION', 'PORTION',
+            'KNOW', 'YOUR', 'ADVICE', 'STORAGE', 'WARNING', 'CAUTION', 'ACCEPT',
+            'DAMAGED', 'SACHET', 'SEAL', 'LETS TALK', 'LETSTALK', 'FEEDBACK'
+        }
 
         self.known_commodity_keywords = {
             'MASALA', 'SPICE', 'SAUCE', 'KETCHUP', 'POWDER', 'OIL', 'TEA', 'COFFEE',
@@ -115,7 +169,7 @@ class FieldClassifier:
             'DRINK', 'WATER', 'JUICE', 'ANTACID', 'SACHET', 'TABLET', 'CAPSULE',
             'FOOD', 'SALT', 'SUGAR', 'MILK', 'BUTTER', 'CHEESE', 'FLOUR', 'ATTA',
             'RICE', 'DAL', 'PULSE', 'PICKLE', 'JAM', 'SYRUP', 'MIX', 'PASTA',
-            'SHRI', 'HARI', 'SUHANA', 'ENO'
+            'SHRI', 'HARI', 'SUHANA', 'ENO', 'WAFER', 'CHOCOLATE', 'CONFECTIONERY'
         }
 
         self.mfg_keywords = [
@@ -156,7 +210,7 @@ class FieldClassifier:
         """
         # Reject batch codes with hyphens/slashes
         upper = text.upper()
-        if self.code_batch_pattern.match(upper) and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD']):
+        if self.code_batch_pattern.match(upper) and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD', 'DATE']):
             return None
 
         full_m = self.full_date_pattern.search(text)
@@ -164,7 +218,8 @@ class FieldClassifier:
             d, m, y_str = full_m.groups()
             y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
             if 2015 <= y <= 2035:
-                return f"{d}/{m.upper()}/{y}"
+                m_norm = "OCT" if m.upper() == "0CT" else m.upper()
+                return f"{d}/{m_norm}/{y}"
 
         m_yr = self.date_pattern.search(text)
         if m_yr:
@@ -174,15 +229,48 @@ class FieldClassifier:
                 m_norm = "OCT" if m.upper() == "0CT" else m.upper()
                 return f"{m_norm}/{y}"
 
+        # Reverse pattern (e.g. 2025/11 or 2025-NOV or 2025NOV)
+        rev_m = re.search(r'\b(20[1-3][0-9])\s*[\.\s/|-]*\s*(0[1-9]|1[0-2]|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)\b', text, re.IGNORECASE)
+        if rev_m:
+            y_str, m = rev_m.groups()
+            y = int(y_str)
+            if 2015 <= y <= 2035:
+                m_norm = "OCT" if m.upper() == "0CT" else m.upper()
+                return f"{m_norm}/{y}"
+
         return None
 
     def _parse_net_quantity(self, text: str) -> Optional[Tuple[float, str, bool]]:
         """
         Parses Net Quantity with strict physical plausibility range check (1g/1ml to 25kg/25L).
+        Rejects nutritional table values (e.g. Protein 5g, Fat 10g, Per 100g, etc.).
         """
+        upper = text.upper()
+        # Expanded nutritional exclusion keywords
+        nutrition_exclusions = [
+            'PROTEIN', 'FAT', 'CARB', 'SUGAR', 'ENERGY', 'CALORIE', 'PER 100', 'PER100',
+            'SERVING', 'DAILY VALUE', '% RDA', 'SODIUM', 'SATURATED', 'FIBER', 'FIBRE',
+            'CALCIUM', 'IRON', 'VITAMIN', 'CHOLESTEROL', 'TRANS FAT', 'TOTAL FAT',
+            'POTASSIUM', 'PHOSPHORUS', 'MAGNESIUM', 'ZINC', 'MANGANESE',
+            'THIAMINE', 'RIBOFLAVIN', 'NIACIN', 'FOLATE', 'PER SERVE',
+        ]
+        if any(kw in upper for kw in nutrition_exclusions):
+            return None
+
+        # Also reject if text has a standalone nutritional label word at start
+        nutritional_prefix_pattern = re.compile(
+            r'^\s*(?:PROTEIN|FAT|CARBS?|SUGAR|FIBER|FIBRE|SODIUM|CALCIUM|IRON|VITAMIN\s*[A-Z]?)\s*',
+            re.IGNORECASE
+        )
+        if nutritional_prefix_pattern.match(text):
+            return None
+
         match = self.net_qty_prefix_pattern.search(text) or self.standalone_qty_pattern.search(text)
         if not match:
-            # Flexible quantity regex
+            # Flexible quantity regex — only run if NOT inside a nutritional context sentence
+            # Reject if the surrounding text has nutritional/ingredient context
+            if re.search(r'\b(?:per|contains|each|typical|average|approx|approximately)\b', text, re.IGNORECASE):
+                return None
             m = re.search(r'\b(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|liter|litres|pcs|n)\b', text, re.IGNORECASE)
             if m:
                 num_val = float(m.group(1))
@@ -268,23 +356,27 @@ class FieldClassifier:
                 classified["fssai_number"] = {
                     "raw_text": fssai_m.group(1),
                     "license_number": fssai_m.group(1),
-                    "is_valid_14_digit": True,
+                    "is_valid_14_digit": len(fssai_m.group(1)) == 14,
                     "confidence": block["confidence"],
                     "bbox": block.get("bbox"),
-                    "rect": block.get("rect")
+                    "rect": block.get("rect"),
+                    "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [block]
                 }
                 claimed_block_ids.add(b_id)
                 break
             elif 'LIC' in text.upper() or 'FSSAI' in text.upper():
-                digits = re.findall(r'\b(1\d{13}|2\d{13})\b', text)
+                digits = re.findall(r'\b(1\d{12,13}|2\d{12,13})\b', text)
                 if digits:
                     classified["fssai_number"] = {
                         "raw_text": text,
                         "license_number": digits[0],
-                        "is_valid_14_digit": True,
+                        "is_valid_14_digit": len(digits[0]) == 14,
                         "confidence": block["confidence"],
                         "bbox": block.get("bbox"),
-                        "rect": block.get("rect")
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
                     }
                     claimed_block_ids.add(b_id)
                     break
@@ -334,14 +426,18 @@ class FieldClassifier:
             text = best_block["text"].strip()
             field_conf = best_block["confidence"] if has_prefix else min(best_block["confidence"], 0.75)
 
+            num_display = int(num_val) if num_val == int(num_val) else num_val
             classified["net_quantity"] = {
                 "raw_text": text,
                 "numeric_value": num_val,
                 "unit": unit_str,
+                "formatted_value": f"{num_display} {unit_str}",
                 "is_standard_unit": is_standard,
                 "confidence": field_conf,
                 "bbox": best_block.get("bbox"),
-                "rect": best_block.get("rect")
+                "rect": best_block.get("rect"),
+                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                "matched_blocks": [best_block]
             }
             claimed_block_ids.add(b_id)
 
@@ -352,44 +448,115 @@ class FieldClassifier:
                 continue
             text = block.get("text", "").strip()
             upper_text = text.upper()
+            claimed_this_block = False
 
-            # MRP Check: Requires explicit currency symbol or MRP keyword adjacent to number
+            # MRP Check: Requires currency symbol, MRP prefix, OR price followed by tax/weight clause
             if not classified["mrp"]:
-                mrp_match = self.mrp_strict_pattern.search(text) or self.price_standalone_pattern.search(text)
+                mrp_match = (
+                    self.mrp_strict_pattern.search(text) or 
+                    self.price_standalone_pattern.search(text) or
+                    self.mrp_tax_suffix_pattern.search(text)
+                )
                 if mrp_match:
-                    raw_price_substr = mrp_match.group(0)
-                    nums = re.findall(r'\d+(?:\.\d{1,2})?', raw_price_substr)
-                    if nums:
-                        price_num = float(nums[-1])
-                        if 1.0 <= price_num <= 50000.0:
-                            classified["mrp"] = {
-                                "raw_text": f"MRP {raw_price_substr}",
-                                "value": price_num,
-                                "currency": "₹" if "₹" in text else "Rs",
-                                "has_tax_clause": has_global_tax_clause or bool(self.tax_clause_pattern.search(text)),
+                    valid_prices = [float(x) for x in re.findall(r'\d+(?:\.\d{1,2})?', text) if 1.0 <= float(x) <= 50000.0]
+                    if valid_prices:
+                        price_num = max(valid_prices)
+                        formatted_price = f"{price_num:g}" if price_num == int(price_num) else f"{price_num:.2f}"
+                        currency_sym = "₹" if "₹" in text else "Rs."
+                        has_taxes = has_global_tax_clause or bool(self.tax_clause_pattern.search(text))
+                        classified["mrp"] = {
+                            "raw_text": text,
+                            "value": price_num,
+                            "formatted_value": f"{currency_sym} {formatted_price}",
+                            "currency": currency_sym,
+                            "has_tax_clause": has_taxes,
+                            "confidence": block["confidence"],
+                            "bbox": block.get("bbox"),
+                            "rect": block.get("rect"),
+                            "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                            "matched_blocks": [block]
+                        }
+                        claimed_this_block = True
+
+            # Date Check: Check for Mfg Date and Expiry Date
+            has_mfg_kw = any(kw in upper_text for kw in ['MFG', 'PKD', 'PACKED', 'MANUFACTURED', 'PROD', 'M/D', 'DOM'])
+            has_exp_kw = any(kw in upper_text for kw in ['EXP', 'BEST BEFORE', 'USE BY', 'EXPIRY', 'BB', 'EXPDATE', 'CONSUME BEFORE'])
+
+            # Case A: Block contains BOTH Mfg and Expiry on one line (e.g. "Mfg Date: NOV 2025 | Expiry Date: OCT 2026")
+            if has_mfg_kw and has_exp_kw:
+                sub_parts = re.split(r'(\||;|\s+(?=EXP|USE\s*BY|BEST\s*BEFORE))', text, flags=re.IGNORECASE)
+                mfg_sub = ""
+                exp_sub = ""
+                for part in sub_parts:
+                    p_upper = part.upper()
+                    if any(kw in p_upper for kw in ['EXP', 'BEST BEFORE', 'USE BY', 'EXPIRY']):
+                        exp_sub += " " + part
+                    elif any(kw in p_upper for kw in ['MFG', 'PKD', 'PACKED', 'MANUFACTURED']):
+                        mfg_sub += " " + part
+
+                mfg_date_val = self._parse_and_validate_date(mfg_sub) or self._parse_and_validate_date(text)
+                if mfg_date_val and not classified["mfg_date"]:
+                    classified["mfg_date"] = {
+                        "raw_text": mfg_sub.strip() or text,
+                        "extracted_date": mfg_date_val,
+                        "confidence": block["confidence"],
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_this_block = True
+
+                exp_date_val = self._parse_and_validate_date(exp_sub)
+                if exp_date_val and not classified["expiry_date"]:
+                    classified["expiry_date"] = {
+                        "raw_text": exp_sub.strip() or text,
+                        "extracted_date": exp_date_val,
+                        "confidence": block["confidence"],
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_this_block = True
+
+            else:
+                parsed_d = self._parse_and_validate_date(text)
+                if parsed_d:
+                    if has_exp_kw:
+                        if not classified["expiry_date"]:
+                            classified["expiry_date"] = {
+                                "raw_text": text,
+                                "extracted_date": parsed_d,
                                 "confidence": block["confidence"],
                                 "bbox": block.get("bbox"),
-                                "rect": block.get("rect")
+                                "rect": block.get("rect"),
+                                "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                                "matched_blocks": [block]
                             }
+                            claimed_this_block = True
+                    elif has_mfg_kw or not classified["mfg_date"]:
+                        if not classified["mfg_date"]:
+                            classified["mfg_date"] = {
+                                "raw_text": text,
+                                "extracted_date": parsed_d,
+                                "confidence": block["confidence"],
+                                "bbox": block.get("bbox"),
+                                "rect": block.get("rect"),
+                                "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                                "matched_blocks": [block]
+                            }
+                            claimed_this_block = True
 
-            # Date Check: Calendar date validation
-            parsed_d = self._parse_and_validate_date(text)
-            if parsed_d:
-                if any(kw in upper_text.replace(" ", "") for kw in ['EXP', 'BESTBEFORE', 'USEBY', 'EXPIRY']):
-                    if not classified["expiry_date"]:
-                        classified["expiry_date"] = {"raw_text": text, "extracted_date": parsed_d, "confidence": block["confidence"]}
-                else:
-                    if not classified["mfg_date"]:
-                        classified["mfg_date"] = {"raw_text": text, "extracted_date": parsed_d, "confidence": block["confidence"]}
-
-            if classified["mrp"] and classified["mrp"].get("raw_text") == text or parsed_d:
+            if claimed_this_block:
                 claimed_block_ids.add(b_id)
 
         # --- Pass 4: Manufacturer Details (Strict Spatial Adjacency & Semantic Boundaries) ---
-        mfg_anchors = ['MANUFACTURED', 'MANUFACTURER', 'PACKED BY', 'MFD BY', 'MFG BY', 'PKD BY', 'MARKETED BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE']
-        mfg_address_words = ['ROAD', 'STREET', 'CITY', 'DIST', 'GUJARAT', 'PIN', 'OFFICE', 'PLOT', 'LTD', 'LIMITED', 'PVT', 'FOODS', 'SATARA', 'MAHARASHTRA', 'GODHRA', 'FACTORY', 'PRATAPPURA']
+        mfg_anchors = ['MANUFACTURED', 'MANUFACTURER', 'PACKED BY', 'MFD BY', 'MFG BY', 'PKD BY', 'MARKETED BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE', 'INDIA LTD', 'BAKERY', 'ESTATES', 'AVEER']
+        mfg_address_words = ['ROAD', 'STREET', 'CITY', 'DIST', 'GUJARAT', 'PIN', 'OFFICE', 'PLOT', 'LTD', 'LIMITED', 'PVT', 'FOODS', 'SATARA', 'MAHARASHTRA', 'GODHRA', 'FACTORY', 'PRATAPPURA', 'DELHI', 'GOA', 'LANE']
         
         mfg_parts = []
+        mfg_blocks = []
         last_mfg_y = None
 
         for block in valid_blocks:
@@ -407,26 +574,31 @@ class FieldClassifier:
             rect = block.get("rect", {})
             y_pos = rect.get("y", 0.0)
 
-            is_anchor = fuzzy_match_any(text, mfg_anchors, min_score=80.0)
+            is_anchor = fuzzy_match_any(text, mfg_anchors, min_score=80.0) or any(kw in upper_text.replace(" ", "") for kw in ['INDIALTD', 'PVTLTD', 'LIMITED', 'MFDBY', 'MFGBY', 'PACKEDBY', 'PKDBY'])
             is_address = any(re.search(r'\b' + term + r'\b', upper_text) for term in mfg_address_words)
 
-            if is_anchor or (mfg_parts and is_address and last_mfg_y is not None and abs(y_pos - last_mfg_y) < 65.0):
+            if is_anchor or (mfg_parts and is_address and last_mfg_y is not None and abs(y_pos - last_mfg_y) < 140.0):
                 mfg_parts.append(text)
+                mfg_blocks.append(block)
                 claimed_block_ids.add(b_id)
                 last_mfg_y = y_pos
 
-        if mfg_parts:
+        if mfg_parts and mfg_blocks:
             combined_mfg = " ".join(mfg_parts)
-            classified["manufacturer_details"] = {
-                "raw_text": combined_mfg,
-                "has_name": True,
-                "has_address": any(re.search(r'\b' + kw + r'\b', combined_mfg.upper()) for kw in mfg_address_words),
-                "confidence": 0.90
-            }
+            classified["manufacturer_details"] = _make_multiline_field_dict(
+                mfg_blocks,
+                combined_mfg,
+                {
+                    "has_name": True,
+                    "has_address": any(re.search(r'\b' + kw + r'\b', combined_mfg.upper()) for kw in mfg_address_words),
+                    "confidence": 0.90
+                }
+            )
 
         # --- Pass 5: Consumer Care Details (Deduplication & Barcode Exclusion) ---
         care_parts = []
-        care_keywords = ['CONSUMER CARE', 'CUSTOMER CARE', 'HELPLINE', 'TOLL FREE', 'SUHANACARE', 'EMAIL', 'FEEDBACK', 'CONTACT US']
+        care_blocks = []
+        care_keywords = ['CONSUMER CARE', 'CUSTOMER CARE', 'HELPLINE', 'TOLL FREE', 'SUHANACARE', 'EMAIL', 'FEEDBACK', 'CONTACT US', 'WECARE', "LET'S TALK"]
 
         for block in valid_blocks:
             b_id = block.get("id")
@@ -442,24 +614,27 @@ class FieldClassifier:
 
             phone_m = self.phone_pattern.search(text)
             email_m = self.email_pattern.search(text)
-            is_care_kw = fuzzy_match_any(text, care_keywords, min_score=80.0)
+            is_care_kw = fuzzy_match_any(text, care_keywords, min_score=80.0) or any(kw in text.upper().replace(" ", "") for kw in ['CONSUMERCARE', 'CUSTOMERCARE', 'HELPLINE', 'TOLLFREE', 'WECARE', 'FEEDBACK', 'CONTACTUS', 'LETSTALK'])
 
             if phone_m or email_m or is_care_kw:
                 if text not in care_parts:
                     care_parts.append(text)
+                    care_blocks.append(block)
                     claimed_block_ids.add(b_id)
 
-        if care_parts:
+        if care_parts and care_blocks:
             combined_care = " ".join(care_parts)
-            classified["consumer_care"] = {
-                "raw_text": combined_care,
-                "has_phone": bool(self.phone_pattern.search(combined_care) or re.search(r'\d{10}', combined_care)),
-                "has_email": bool(self.email_pattern.search(combined_care) or '@' in combined_care),
-                "confidence": 0.90
-            }
+            classified["consumer_care"] = _make_multiline_field_dict(
+                care_blocks,
+                combined_care,
+                {
+                    "has_phone": bool(self.phone_pattern.search(combined_care) or re.search(r'\d{10}', combined_care)),
+                    "has_email": bool(self.email_pattern.search(combined_care) or '@' in combined_care),
+                    "confidence": 0.90
+                }
+            )
 
-        # --- Pass 6: Generic Commodity Name Extraction ---
-        # Reverted & Fixed: Require 0° horizontal text, word-boundary commodity matching, exclude garbled fragments
+        # --- Pass 6: Generic Commodity Name & Brand Extraction ---
         commodity_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
@@ -469,7 +644,12 @@ class FieldClassifier:
             text = block.get("text", "").strip()
             upper = text.upper()
 
-            # Reject garbled text fragments (e.g. 'PASTEII', 'TaprEvie...')
+            # Reject packaging field headers, care terms, and instructions
+            care_or_header_kws = ['CARE', 'CUSTOMER', 'CONSUMER', 'HELPLINE', 'EMAIL', 'FEEDBACK', 'TOLLFREE', 'WECARE', 'QUANTITY', 'NETWT', 'NETQTY', 'BATCH', 'USEBY', 'EXPIRY', 'INGREDIENT', 'NUTRITION', 'PORTION', 'ADVICE']
+            if any(h in upper.replace(" ", "") for h in care_or_header_kws) or upper.endswith(':'):
+                continue
+
+            # Reject garbled text fragments
             if re.search(r'[A-Z]{2,}II$', upper) or len(re.sub(r'[^A-Za-z]', '', text)) < 3:
                 continue
 
@@ -480,43 +660,52 @@ class FieldClassifier:
             if any(kw in upper.replace(" ", "") for kw in ['ACCEPT', 'DAMAGED', 'SACHET', 'SEAL', 'TAMPER', 'WARNING', 'DONOTACCEPT', 'DISCLAIMER', 'STOREINA', 'COOLANDDRY']):
                 continue
 
-            words = re.findall(r'[a-zA-Z]+', text)
-            if len(words) < 1 or len(words) > 5:
+            # Reject address components, street names, and postal pin codes from commodity candidate
+            if re.search(r'\b(?:ROAD|STREET|AVENUE|LANE|PLOT|GAT|NAGAR|SECTOR|INDUSTRIAL|ESTATE|DIST|PIN|\d{6})\b', upper):
                 continue
 
-            letters = len(re.findall(r'[a-zA-Z]', text))
-            non_space = len(re.sub(r'\s+', '', text))
-            if letters < 3 or (letters / float(non_space) < 0.60 if non_space > 0 else True):
+            # Explicit generic commodity prefix detection (Rule 6(1)(b))
+            has_explicit_prefix = bool(re.match(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]', text, re.IGNORECASE))
+            clean_text = re.sub(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]*', '', text, flags=re.IGNORECASE).strip()
+
+            words = re.findall(r'[a-zA-Z]+', clean_text)
+            if len(words) < 1 or len(words) > 8:
                 continue
 
             rect = block.get("rect", {})
             h_px = rect.get("height", 10.0)
             y_pos = rect.get("y", 9999.0)
 
-            # Prominence scoring: text height + top position + word-boundary commodity match
-            score = block["confidence"] * 10.0 + (h_px / 5.0)
-            if any(re.search(r'\b' + kw + r'\b', upper) for kw in self.known_commodity_keywords):
+            # Prominence scoring:
+            score = block.get("confidence", 0.5) * 10.0 + (h_px / 4.0)
+            if has_explicit_prefix:
+                score += 100.0  # Highest priority for explicit LMPC declaration
+            if any(re.search(r'\b' + kw + r'\b', clean_text.upper()) for kw in self.known_commodity_keywords):
                 score += 30.0
             if y_pos < 500:
-                score += 10.0
+                score += 15.0
 
-            commodity_candidates.append((score, block))
+            commodity_candidates.append((score, block, clean_text, has_explicit_prefix))
 
         if commodity_candidates:
             commodity_candidates.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_block = commodity_candidates[0]
-            cand_conf = best_block["confidence"] if best_score >= 15.0 else 0.50
+            best_score, best_block, clean_text, has_prefix = commodity_candidates[0]
+            # Raised threshold from 15.0 to 25.0 — prevents garbled low-quality text from being picked
+            cand_conf = best_block["confidence"] if best_score >= 25.0 else 0.50
             classified["commodity_name"] = {
                 "raw_text": best_block["text"].strip(),
+                "clean_name": clean_text or best_block["text"].strip(),
+                "has_explicit_declaration": has_prefix,
                 "confidence": cand_conf,
                 "bbox": best_block.get("bbox"),
-                "rect": best_block.get("rect")
+                "rect": best_block.get("rect"),
+                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                "matched_blocks": [best_block]
             }
 
         classified["unclassified_blocks_count"] = max(0, len(valid_blocks) - len(claimed_block_ids))
 
         # --- Pass 7: Gemini LLM Hybrid Second Opinion & Fallback ---
-        # Fast-Path LLM Skip: If deterministic regex rules found essential LMPC fields, skip network LLM call for high speed
         found_fields = [k for k in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"] if classified.get(k) is not None]
         has_critical_fields = bool(classified.get("mrp") or classified.get("net_quantity") or classified.get("commodity_name"))
 
@@ -546,7 +735,8 @@ class FieldClassifier:
                 if existing is None:
                     # Regex missed it completely - use LLM extraction with llm_assisted=True flag
                     if class_key == "mrp":
-                        price_num = float(re.findall(r'\d+(?:\.\d+)?', str(llm_val))[0]) if re.findall(r'\d+(?:\.\d+)?', str(llm_val)) else None
+                        nums = re.findall(r'\d+(?:\.\d+)?', str(llm_val))
+                        price_num = float(nums[0]) if nums else None
                         classified["mrp"] = {
                             "raw_text": str(llm_val),
                             "value": price_num,
@@ -589,4 +779,79 @@ class FieldClassifier:
                     existing["llm_verified"] = True
                     logger.info(f"LLM Verified field '{class_key}' (Confidence upgraded to 0.95)")
 
+            # Attach matching block geometry to any fields that still lack rect/font_height_px
+            for class_key in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"]:
+                f_obj = classified.get(class_key)
+                if f_obj and (not f_obj.get("rect") or not f_obj.get("font_height_px")):
+                    r_text = str(f_obj.get("raw_text", "")).strip()
+                    best_b = None
+                    best_score = 0.0
+                    for b in valid_blocks:
+                        bt = b.get("text", "").strip()
+                        if not bt:
+                            continue
+                        if r_text.lower() in bt.lower() or bt.lower() in r_text.lower():
+                            best_b = b
+                            break
+                        if HAS_RAPIDFUZZ:
+                            sc = fuzz.partial_ratio(r_text.lower(), bt.lower())
+                            if sc > best_score and sc >= 60:
+                                best_score = sc
+                                best_b = b
+                    if best_b:
+                        f_obj["rect"] = best_b.get("rect")
+                        f_obj["bbox"] = best_b.get("bbox")
+                        f_obj["font_height_px"] = float(best_b.get("rect", {}).get("height", 25.0))
+                        f_obj["matched_blocks"] = [best_b]
+
         return classified
+
+    def merge_multiside_fields(self, side_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merges classified fields from multiple compatible sides of the same package into
+        a single unified, highest-confidence declaration dictionary.
+        """
+        merged = {
+            "mrp": None,
+            "net_quantity": None,
+            "mfg_date": None,
+            "expiry_date": None,
+            "manufacturer_details": None,
+            "consumer_care": None,
+            "fssai_number": None,
+            "commodity_name": None,
+            "unclassified_blocks_count": 0
+        }
+
+        all_fields_keys = ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "fssai_number", "commodity_name"]
+
+        for res in side_results:
+            side_fields = res.get("classified_fields", {})
+            for key in all_fields_keys:
+                val = side_fields.get(key)
+                if val is not None:
+                    curr = merged[key]
+                    if curr is None:
+                        merged[key] = val
+                    else:
+                        curr_conf = curr.get("confidence", 0.0) if isinstance(curr, dict) else 0.0
+                        new_conf = val.get("confidence", 0.0) if isinstance(val, dict) else 0.0
+
+                        # Special case: commodity_name - prefer explicit declaration
+                        if key == "commodity_name":
+                            if val.get("has_explicit_declaration") and not curr.get("has_explicit_declaration"):
+                                merged[key] = val
+                            elif new_conf > curr_conf:
+                                merged[key] = val
+                        # Special case: manufacturer_details - prefer more complete address
+                        elif key == "manufacturer_details":
+                            if val.get("has_address") and not curr.get("has_address"):
+                                merged[key] = val
+                            elif new_conf > curr_conf:
+                                merged[key] = val
+                        elif new_conf > curr_conf:
+                            merged[key] = val
+
+            merged["unclassified_blocks_count"] += side_fields.get("unclassified_blocks_count", 0)
+
+        return merged
