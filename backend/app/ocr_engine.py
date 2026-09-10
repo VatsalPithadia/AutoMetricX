@@ -3,7 +3,7 @@ import numpy as np
 import os
 import re
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Set
 
 # Fix Windows Paddle / oneDNN static executor issues
 os.environ["FLAGS_use_onednn"] = "0"
@@ -167,6 +167,79 @@ def get_easy_ocr():
         return None
 
 
+def detect_scripts_in_text(text: str) -> List[str]:
+    """
+    Detects presence of Gujarati, Hindi/Devanagari, and Latin/English scripts.
+    """
+    scripts = []
+    if re.search(r'[\u0A80-\u0AFF]', text):
+        scripts.append("gu")
+    if re.search(r'[\u0900-\u097F]', text):
+        scripts.append("hi")
+    if re.search(r'[A-Za-z]', text):
+        scripts.append("en")
+    return scripts or ["en"]
+
+def stitch_vertical_text_columns(blocks: List[Dict[str, Any]], start_block_id: int) -> Tuple[List[Dict[str, Any]], Set[int]]:
+    """
+    Detects character-by-character stacked vertical text columns
+    (e.g., M-R-P, B-A-T-C-H, dates printed vertically top-to-bottom).
+    Combines them into coherent, single-line text blocks with is_vertical: True.
+    """
+    singles = [b for b in blocks if len(b.get("text", "").strip()) <= 3 and b.get("rect")]
+    # Sort strictly by Y coordinate first to maintain top-to-bottom sequence
+    singles.sort(key=lambda b: (b["rect"]["y"], b["rect"]["x"]))
+
+    columns: List[List[Dict[str, Any]]] = []
+    for b in singles:
+        b_cx = b["rect"]["x"] + b["rect"]["width"] / 2.0
+        placed = False
+        for col in columns:
+            last_item = col[-1]
+            last_cx = last_item["rect"]["x"] + last_item["rect"]["width"] / 2.0
+            y_gap = b["rect"]["y"] - (last_item["rect"]["y"] + last_item["rect"]["height"])
+            # Within 20px horizontally and -5 to 45px vertical gap
+            if abs(b_cx - last_cx) <= 20 and -5 <= y_gap <= 45:
+                col.append(b)
+                placed = True
+                break
+        if not placed:
+            columns.append([b])
+
+    stitched_blocks = []
+    used_ids = set()
+    current_id = start_block_id
+
+    for col in columns:
+        if len(col) >= 3:
+            combined_text = "".join(b["text"].strip() for b in col)
+            min_x = min(b["rect"]["x"] for b in col)
+            max_x = max(b["rect"]["x"] + b["rect"]["width"] for b in col)
+            min_y = min(b["rect"]["y"] for b in col)
+            max_y = max(b["rect"]["y"] + b["rect"]["height"] for b in col)
+            w_px = round(max_x - min_x, 1)
+            h_px = round(max_y - min_y, 1)
+            avg_conf = sum(b.get("confidence", 0.8) for b in col) / len(col)
+
+            stitched_blocks.append({
+                "id": current_id,
+                "text": combined_text,
+                "confidence": round(avg_conf, 4),
+                "bbox": [[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y]],
+                "rect": {"x": min_x, "y": min_y, "width": w_px, "height": h_px},
+                "height_px": h_px,
+                "width_px": w_px,
+                "angle": 90,
+                "is_vertical": True,
+                "is_stitched_vertical": True,
+                "constituent_ids": [b.get("id") for b in col]
+            })
+            current_id += 1
+            for b in col:
+                used_ids.add(b.get("id"))
+
+    return stitched_blocks, used_ids
+
 def transform_rotated_point(pt: List[float], angle: int, W_orig: int, H_orig: int) -> List[float]:
     """
     Transforms coordinates from rotated image frame back to original 0° image frame.
@@ -188,7 +261,9 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
     High-Speed & High-Recall Multi-Angle OCR Execution Function.
     Runs RapidOCR (PaddleOCR ONNX Runtime) at 1600px resolution with CLAHE contrast enhancement:
     - Primary 0° pass for fast extraction
-    - Adaptive rotation pass (90°, 270°) only if key LMPC fields are missing from 0° scan
+    - Robust 90° & 270° rotation passes for vertical/rotated text on side margins, seams, and stamps
+    - Vertical stacked character stitcher
+    - Multilingual script analysis (English, Gujarati, Hindi)
     """
     img, meta = preprocess_image(image_bytes, max_dimension=1600, apply_clahe=True)
     H_orig, W_orig = meta["height"], meta["width"]
@@ -238,17 +313,28 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                     existing_texts.add(text_str.upper())
                     block_id += 1
 
-            # Smart Adaptive Multi-Angle Pass:
-            # Check if 0° pass extracted sufficient LMPC key declarations. If so, skip expensive rotation passes.
+            # Multi-Angle Rotation Pass (90° CW & 270° CCW):
+            # Critical for vertical text printed on packaging seams, gussets, side margins, and vertical format dates/MRP.
+            # Runs whenever:
+            # 1. Any vertical text blocks were suspected/detected in 0° pass (is_vertical is True)
+            # 2. Or enable_multi_angle is True and any key declaration is missing or unverified
+            # 3. Or total detected blocks < 8
+            has_vertical_blocks = any(b.get("is_vertical", False) for b in blocks)
             all_text_concat = " ".join([b["text"].upper() for b in blocks])
-            has_mrp = any(kw in all_text_concat for kw in ["MRP", "RS", "₹", "PRICE", "MAX"])
-            has_qty = any(kw in all_text_concat for kw in ["NET", "QTY", "WEIGHT", "WT", "VOL", "50G", "100G", "250G", "1KG", "500G", "G", "KG", "ML", "L"])
-            has_mfg = any(kw in all_text_concat for kw in ["MFG", "PKD", "EXP", "DATE", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])
+            has_mrp = any(kw in all_text_concat for kw in ["MRP", "RS", "₹", "PRICE", "MAX", "મ.ચી.ભા", "અ.ખુ.મૂ"])
+            has_qty = any(kw in all_text_concat for kw in ["NET", "QTY", "WEIGHT", "WT", "VOL", "50G", "100G", "250G", "1KG", "500G", "G", "KG", "ML", "L", "વજન", "માત્રા"])
+            has_mfg = any(kw in all_text_concat for kw in ["MFG", "PKD", "EXP", "DATE", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC", "તારીખ", "તિથિ"])
+            has_mfg_addr = any(kw in all_text_concat for kw in ["MFD BY", "MFG BY", "PACKED BY", "PKD BY", "MANUFACTURED", "ઉત્પાદક", "નિર્માતા"])
+            has_care = any(kw in all_text_concat for kw in ["CARE", "CONSUMER", "CUSTOMER", "HELPLINE", "1800", "ગ્રાહક", "સેવા"])
 
-            needs_rotation_pass = enable_multi_angle and not (len(blocks) >= 4 and (has_mrp or has_qty or has_mfg))
+            needs_rotation_pass = enable_multi_angle and (
+                has_vertical_blocks or
+                not (has_mrp and has_qty and has_mfg and has_mfg_addr and has_care) or
+                len(blocks) < 8
+            )
 
             if needs_rotation_pass:
-                logger.info("0° pass incomplete - executing targeted 90°/270° rotation passes...")
+                logger.info("Executing comprehensive 90° and 270° multi-angle rotation passes for vertical/rotated text...")
                 angles_to_check = [
                     (90, cv2.ROTATE_90_CLOCKWISE),
                     (270, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -257,7 +343,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                     rot_img = cv2.rotate(img, rot_code)
                     rot_res, _ = rapid_engine(rot_img)
                     if rot_res:
-                        logger.info(f"Executing RapidOCR {angle_deg}° rotation pass for vertical/rotated text...")
+                        logger.info(f"RapidOCR {angle_deg}° rotation pass found {len(rot_res)} items...")
                         for item in rot_res:
                             bbox_rot = item[0]
                             text_rot = item[1] if len(item) < 3 else item[1]
@@ -275,7 +361,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                             min_y, max_y = min(ys), max(ys)
                             w_px = round(max_x - min_x, 2)
                             h_px = round(float(max_y - min_y), 2)
-                            is_vert = (angle_deg in (90, 270)) or ((h_px / max(1.0, w_px)) > 1.8)
+                            is_vert = True
 
                             blocks.append({
                                 "id": block_id,
@@ -291,7 +377,7 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                             existing_texts.add(t_str.upper())
                             block_id += 1
             else:
-                logger.info(f"0° primary pass extracted {len(blocks)} blocks with key LMPC fields. Skipping rotation passes for speed.")
+                logger.info(f"0° primary pass extracted {len(blocks)} blocks with complete LMPC declarations.")
 
             # 1b. Targeted Bottom Strip Pass (Inkjet Variable Coder Strip: Batch, Dates, MRP, USP)
             # In Indian packaged commodities, variable batch data (batch no, packed date, expiry/use-by,
@@ -484,6 +570,30 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                 if block_id > 20:
                     break
 
+    # 4. Vertical Stacked Character Column Stitcher
+    # Aggregates vertically aligned single-character blocks into readable text declarations
+    if blocks:
+        try:
+            stitched, used_ids = stitch_vertical_text_columns(blocks, start_block_id=len(blocks) + 1)
+            if stitched:
+                logger.info(f"Stitched {len(stitched)} vertical text column blocks (used {len(used_ids)} single characters)")
+                # Retain original blocks that weren't consumed, plus stitched blocks
+                blocks = [b for b in blocks if b.get("id") not in used_ids] + stitched
+                # Re-index block ids cleanly
+                for idx, b in enumerate(blocks, 1):
+                    b["id"] = idx
+        except Exception as v_err:
+            logger.warning(f"Vertical column stitcher skipped: {v_err}")
+
+    # 5. Multilingual Script Annotation (Gujarati, Hindi, English)
+    detected_scripts_all = set()
+    for b in blocks:
+        s_list = detect_scripts_in_text(b.get("text", ""))
+        b["scripts"] = s_list
+        b["lang"] = s_list[0]
+        for s in s_list:
+            detected_scripts_all.add(s)
+
     raw_extracted_text = "\n".join([b["text"] for b in blocks if b["text"]])
     
     return {
@@ -492,6 +602,9 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
         "total_detected_blocks": len(blocks),
         "raw_text": raw_extracted_text,
         "text_lines": [b["text"] for b in blocks],
-        "blocks": blocks
+        "blocks": blocks,
+        "detected_languages": sorted(list(detected_scripts_all)) or ["en"],
+        "has_vertical_text": any(b.get("is_vertical") for b in blocks)
     }
+
 

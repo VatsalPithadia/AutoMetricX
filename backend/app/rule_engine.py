@@ -52,17 +52,17 @@ class LMPCRuleEngine:
         # --- Rule 1: Rule 6(1)(a) Manufacturer/Packer Name & Address ---
         mfg_field = classified_fields.get("manufacturer_details")
         total_checked += 1
-        if mfg_field and mfg_field.get("has_name"):
+        if mfg_field and (mfg_field.get("has_name") or mfg_field.get("raw_text")):
             conf = mfg_field.get("confidence", 0.90)
-            found_val = mfg_field["raw_text"]
-            if conf >= 0.60:
+            found_val = mfg_field.get("raw_text") or mfg_field.get("company_name", "")
+            if conf >= 0.60 and len(str(found_val).strip()) >= 5:
                 status = "PASS"
                 explanation = "Manufacturer name & address details are clearly declared on the package."
                 severity = "NONE"
                 total_passed += 1
             else:
                 status = "LOW_CONFIDENCE"
-                explanation = f"Manufacturer details candidate found ('{found_val[:40]}...'), but detection confidence is low ({int(conf*100)}%). Verification recommended."
+                explanation = f"Manufacturer details candidate found ('{str(found_val)[:40]}...'), but detection confidence is low ({int(conf*100)}%). Verification recommended."
                 severity = "LOW"
                 total_low_conf += 1
         else:
@@ -201,7 +201,8 @@ class LMPCRuleEngine:
         if mrp_data:
             conf = mrp_data.get("confidence", 0.80)
             found_val = mrp_data.get("raw_text") or mrp_data.get("formatted_value")
-            if mrp_data.get("has_tax_clause") and conf >= 0.60:
+            has_tax = mrp_data.get("has_tax_clause") or any(tc in str(found_val).lower() for tc in ["tax", "કર સહિત", "કરોં સહિત"])
+            if has_tax and conf >= 0.60:
                 status = "PASS"
                 explanation = f"Retail Sale Price (MRP) printed with mandatory 'inclusive of all taxes' clause ('{found_val}')."
                 severity = "NONE"
@@ -233,17 +234,17 @@ class LMPCRuleEngine:
         # --- Rule 6: Rule 6(1)(f) Consumer Care Contact Details ---
         care_data = classified_fields.get("consumer_care")
         total_checked += 1
-        if care_data and (care_data.get("has_phone") or care_data.get("has_email")):
+        if care_data and (care_data.get("has_phone") or care_data.get("has_email") or care_data.get("raw_text")):
             conf = care_data.get("confidence", 0.90)
-            found_val = care_data["raw_text"]
-            if conf >= 0.60:
+            found_val = care_data.get("raw_text") or care_data.get("formatted", "")
+            if conf >= 0.60 and len(str(found_val).strip()) >= 5:
                 status = "PASS"
                 explanation = "Consumer Care helpline contact details (phone/email) are clearly printed."
                 severity = "NONE"
                 total_passed += 1
             else:
                 status = "LOW_CONFIDENCE"
-                explanation = f"Consumer Care contact candidate found ('{found_val[:40]}...'), but confidence is low ({int(conf*100)}%)."
+                explanation = f"Consumer Care contact candidate found ('{str(found_val)[:40]}...'), but confidence is low ({int(conf*100)}%)."
                 severity = "LOW"
                 total_low_conf += 1
         else:

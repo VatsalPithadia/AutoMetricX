@@ -48,13 +48,14 @@ app = FastAPI(
 # we can add the Vercel deployment URL without rebuilding the image.
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,https://footwear-dime-squatted.ngrok-free.dev"
+    "http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,https://footwear-dime-squatted.ngrok-free.dev"
 )
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,8 +121,8 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     except Exception:
         ocr_res_img = cv_img  # safe fallback
 
-    # 2. Field classification
-    classified_fields = classifier_engine.classify_blocks(ocr_blocks)
+    # 2. Field classification with multimodal LLM & local contextual NLP fallback
+    classified_fields = classifier_engine.classify_blocks(ocr_blocks, image_bytes=contents)
 
     # 3. LMPC Rule Engine evaluation with font calibration
     # Pass the OCR-resolution image so barcode px measurement matches OCR block coordinate space
@@ -132,7 +133,7 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
         image_metadata=ocr_result.get("image_metadata")
     )
 
-    # 4. Barcode & QR code cross-check
+    # 4. Barcode & QR code cross-check with 6-stage recovery filter bank
     decoded_codes = barcode_engine.decode_barcodes_and_qr(cv_img) if cv_img is not None else []
     barcode_qr_analysis = barcode_engine.verify_cross_check(decoded_codes, classified_fields)
 
@@ -143,6 +144,8 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
         "raw_text": ocr_result["raw_text"],
         "text_lines": ocr_result["text_lines"],
         "ocr_blocks": ocr_result["blocks"],
+        "detected_languages": ocr_result.get("detected_languages", ["en"]),
+        "has_vertical_text": ocr_result.get("has_vertical_text", False),
         "classified_fields": classified_fields,
         "compliance_report": compliance_report,
         "barcode_qr_analysis": barcode_qr_analysis
@@ -291,6 +294,8 @@ async def scan_label_image(
             "raw_text": combined_raw_text,
             "ocr_blocks": combined_blocks,
             "classified_fields": merged_classified,
+            "detected_languages": list(dict.fromkeys([lang for s in side_results for lang in s.get("detected_languages", ["en"])])) or ["en"],
+            "has_vertical_text": any(s.get("has_vertical_text", False) for s in side_results),
             "compliance_report": final_report,
             "barcode_qr_analysis": combined_barcode,
             "product_consistency": {

@@ -2,7 +2,6 @@ import re
 import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Set, Tuple
-# pyrefly: ignore [missing-import]
 try:
     from app.llm_extractor import LLMExtractor
 except (ImportError, ModuleNotFoundError):
@@ -12,6 +11,7 @@ try:
     from rapidfuzz import fuzz
     HAS_RAPIDFUZZ = True
 except ImportError:
+    fuzz = None
     HAS_RAPIDFUZZ = False
 
 logger = logging.getLogger("metrolens.classifier")
@@ -62,7 +62,7 @@ def fuzzy_match_any(text: str, targets: List[str], min_score: float = 80.0) -> b
     for t in targets:
         if t.upper() in upper:
             return True
-        if HAS_RAPIDFUZZ and len(t) >= 4:
+        if HAS_RAPIDFUZZ and fuzz is not None and len(t) >= 4:
             score = fuzz.partial_ratio(t.upper(), upper)
             if score >= min_score:
                 return True
@@ -122,7 +122,7 @@ class FieldClassifier:
         )
 
         self.net_qty_prefix_pattern = re.compile(
-            r'(?:NET\s*(?:QTY|QUANTITY|WT|WEIGHT|VOL|VOLUME|CONTENTS|MASS)|TOTAL\s*NET\s*(?:WT|WEIGHT|QTY)|NET|N\.W\.)\s*[:=.\s]*(\d+(?:\.\d+)?)\s*([a-zA-Z]+|Pcs|Units)',
+            r'(?:NET\s*(?:QTY|QUANTITY|WT|WEIGHT)|TOTAL\s*NET\s*(?:WT|WEIGHT|QTY)|NET|N\.W\.)\s*[:=.\s]*(\d+(?:\.\d+)?)\s*([a-zA-Z]+|Pcs|Units)',
             re.IGNORECASE
         )
         self.standalone_qty_pattern = re.compile(
@@ -455,9 +455,9 @@ class FieldClassifier:
         is_standard = norm_unit in ['g', 'kg', 'ml', 'L', 'N']
         return (num_val, norm_unit, is_standard)
 
-    def classify_blocks(self, blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def classify_blocks(self, blocks: List[Dict[str, Any]], image_bytes: Optional[bytes] = None) -> Dict[str, Any]:
         """
-        Classifies OCR blocks into structured fields.
+        Classifies OCR blocks into structured fields with multimodal LLM & local contextual NLP fallback.
         """
         valid_blocks = [b for b in blocks if b.get("confidence", 0.0) >= self.min_confidence]
         logger.info(f"Classifying {len(valid_blocks)} blocks out of {len(blocks)} (confidence >= {self.min_confidence})")
@@ -480,6 +480,8 @@ class FieldClassifier:
         recipe_block_ids: Set[Any] = set()
         for block in valid_blocks:
             b_id = block.get("id")
+            if b_id is None:
+                continue
             text = block.get("text", "").strip()
             if self._is_recipe_instruction_block(text) and b_id is not None:
                 recipe_block_ids.add(b_id)
@@ -497,7 +499,7 @@ class FieldClassifier:
         # --- Pass 1: FSSAI License Number ---
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids:
+            if b_id is None or b_id in claimed_block_ids:
                 continue
             text = block.get("text", "").strip()
 
@@ -552,7 +554,7 @@ class FieldClassifier:
         net_qty_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids or b_id in recipe_block_ids:
+            if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
             text = block.get("text", "").strip()
             upper_text = text.upper()
@@ -614,45 +616,25 @@ class FieldClassifier:
             text = best_block["text"].strip()
             field_conf = best_block["confidence"] if has_prefix else min(best_block["confidence"], 0.75)
 
-            if is_ambiguous:
-                # Report ambiguity — list all candidates in raw_text for downstream review
-                all_candidates_str = " | ".join(
-                    f"{int(c[2]) if c[2]==int(c[2]) else c[2]}{c[3]}"
-                    for c in net_qty_candidates[:3]
-                )
-                classified["net_quantity"] = {
-                    "raw_text": text,
-                    "numeric_value": num_val,
-                    "unit": unit_str,
-                    "formatted_value": f"{int(num_val) if num_val == int(num_val) else num_val} {unit_str}",
-                    "is_standard_unit": is_standard,
-                    "confidence": min(field_conf, 0.55),  # cap at LOW_CONFIDENCE threshold
-                    "ambiguous_candidates": all_candidates_str,
-                    "bbox": best_block.get("bbox"),
-                    "rect": best_block.get("rect"),
-                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
-                    "matched_blocks": [best_block]
-                }
-            else:
-                num_display = int(num_val) if num_val == int(num_val) else num_val
-                classified["net_quantity"] = {
-                    "raw_text": text,
-                    "numeric_value": num_val,
-                    "unit": unit_str,
-                    "formatted_value": f"{num_display} {unit_str}",
-                    "is_standard_unit": is_standard,
-                    "confidence": field_conf,
-                    "bbox": best_block.get("bbox"),
-                    "rect": best_block.get("rect"),
-                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
-                    "matched_blocks": [best_block]
-                }
+            num_display = int(num_val) if num_val == int(num_val) else num_val
+            classified["net_quantity"] = {
+                "raw_text": text,
+                "numeric_value": num_val,
+                "unit": unit_str,
+                "formatted_value": f"{num_display} {unit_str}",
+                "is_standard_unit": is_standard,
+                "confidence": field_conf,
+                "bbox": best_block.get("bbox"),
+                "rect": best_block.get("rect"),
+                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                "matched_blocks": [best_block]
+            }
             claimed_block_ids.add(b_id)
 
         # --- Pass 3: MRP & Manufacturing / Expiry Date ---
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids or b_id in recipe_block_ids:
+            if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
             text = block.get("text", "").strip()
             upper_text = text.upper()
@@ -876,7 +858,7 @@ class FieldClassifier:
 
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids or b_id in recipe_block_ids:
+            if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
 
             text = block.get("text", "").strip()
@@ -926,7 +908,7 @@ class FieldClassifier:
 
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids or b_id in recipe_block_ids:
+            if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
 
             text = block.get("text", "").strip()
@@ -963,7 +945,7 @@ class FieldClassifier:
         commodity_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
-            if b_id in claimed_block_ids or b_id in recipe_block_ids:
+            if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
 
             text = block.get("text", "").strip()
@@ -1048,15 +1030,28 @@ class FieldClassifier:
 
         classified["unclassified_blocks_count"] = max(0, len(valid_blocks) - len(claimed_block_ids))
 
-        # --- Pass 7: Gemini LLM Hybrid Second Opinion & Fallback ---
+        # --- Pass 7: Gemini Multimodal LLM & Local Deep NLP Contextual Recovery ---
         found_fields = [k for k in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"] if classified.get(k) is not None]
-        has_critical_fields = bool(classified.get("mrp") or classified.get("net_quantity") or classified.get("commodity_name"))
+        all_high_conf = len(found_fields) == 8 and all(
+            (classified[k].get("confidence", 0) >= 0.85 if isinstance(classified.get(k), dict) else False)
+            for k in found_fields
+        )
 
-        if len(found_fields) >= 4 and has_critical_fields:
-            logger.info(f"Fast-path skip: Regex extracted {len(found_fields)}/8 fields successfully. Skipping LLM network call.")
+        if all_high_conf:
+            logger.info("Fast-path: All 8/8 fields extracted with >=85% confidence. Attaching local deep search metadata.")
+            local_meta = self.llm_extractor.local_multilingual_recovery(full_raw_str)
+            if local_meta:
+                if local_meta.get("deep_search_details"):
+                    classified["deep_search_details"] = local_meta["deep_search_details"]
+                if local_meta.get("detected_languages"):
+                    classified["detected_languages"] = local_meta["detected_languages"]
+                if local_meta.get("unit_sale_price"):
+                    classified["unit_sale_price"] = local_meta["unit_sale_price"]
+                if local_meta.get("batch_number"):
+                    classified["batch_number"] = local_meta["batch_number"]
             return classified
 
-        llm_extractions = self.llm_extractor.extract_fields_from_ocr(full_raw_str)
+        llm_extractions = self.llm_extractor.extract_fields_from_ocr(full_raw_str, image_bytes)
         if llm_extractions:
             field_mapping = {
                 "commodity_name": "generic_commodity_name",
@@ -1071,12 +1066,12 @@ class FieldClassifier:
 
             for class_key, llm_key in field_mapping.items():
                 llm_val = llm_extractions.get(llm_key)
-                if not llm_val or str(llm_val).lower() == "null":
+                if not llm_val or str(llm_val).lower() in ["null", "none"]:
                     continue
 
                 existing = classified.get(class_key)
                 if existing is None:
-                    # Regex missed it completely - use LLM extraction with llm_assisted=True flag
+                    # Missing field recovery
                     if class_key == "mrp":
                         nums = re.findall(r'\d+(?:\.\d+)?', str(llm_val))
                         price_num = float(nums[0]) if nums else None
@@ -1084,7 +1079,7 @@ class FieldClassifier:
                             "raw_text": str(llm_val),
                             "value": price_num,
                             "currency": "₹" if "₹" in str(llm_val) else "Rs",
-                            "has_tax_clause": has_global_tax_clause or "tax" in str(llm_val).lower(),
+                            "has_tax_clause": has_global_tax_clause or any(tc in str(llm_val).lower() for tc in ["tax", "કર સહિત", "करों सहित"]),
                             "confidence": 0.85,
                             "llm_assisted": True
                         }
@@ -1106,21 +1101,71 @@ class FieldClassifier:
                                 "numeric_value": str(llm_val),
                                 "unit": "",
                                 "is_standard_unit": True,
-                                "confidence": 0.75,
+                                "confidence": 0.80,
                                 "llm_assisted": True
                             }
+                    elif class_key == "manufacturer_details":
+                        classified["manufacturer_details"] = {
+                            "raw_text": str(llm_val),
+                            "has_name": True,
+                            "has_address": True,
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
+                    elif class_key == "consumer_care":
+                        classified["consumer_care"] = {
+                            "raw_text": str(llm_val),
+                            "has_phone": True,
+                            "has_email": "@" in str(llm_val),
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
+                    elif class_key == "fssai_number":
+                        clean_lic = re.sub(r'\D', '', str(llm_val))
+                        classified["fssai_number"] = {
+                            "license_number": clean_lic or str(llm_val),
+                            "raw_text": str(llm_val),
+                            "is_valid_14_digit": len(clean_lic) == 14,
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
+                    elif class_key in ["mfg_date", "expiry_date"]:
+                        classified[class_key] = {
+                            "raw_text": str(llm_val),
+                            "extracted_date": str(llm_val),
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
+                    elif class_key == "commodity_name":
+                        classified["commodity_name"] = {
+                            "raw_text": str(llm_val),
+                            "clean_name": str(llm_val),
+                            "has_explicit_declaration": True,
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
                     else:
                         classified[class_key] = {
                             "raw_text": str(llm_val),
                             "confidence": 0.85,
                             "llm_assisted": True
                         }
-                    logger.info(f"LLM Fallback filled missing field '{class_key}': '{llm_val}'")
+                    logger.info(f"Contextual NLP filled missing field '{class_key}': '{llm_val}'")
                 else:
                     # Both Regex and LLM extracted value - Upgrade confidence signal
                     existing["confidence"] = max(existing.get("confidence", 0.70), 0.95)
                     existing["llm_verified"] = True
-                    logger.info(f"LLM Verified field '{class_key}' (Confidence upgraded to 0.95)")
+                    logger.info(f"Contextual NLP Verified field '{class_key}' (Confidence upgraded to 0.95)")
+
+            # Attach deep search metadata
+            if llm_extractions.get("deep_search_details"):
+                classified["deep_search_details"] = llm_extractions["deep_search_details"]
+            if llm_extractions.get("detected_languages"):
+                classified["detected_languages"] = llm_extractions["detected_languages"]
+            if llm_extractions.get("unit_sale_price"):
+                classified["unit_sale_price"] = llm_extractions["unit_sale_price"]
+            if llm_extractions.get("batch_number"):
+                classified["batch_number"] = llm_extractions["batch_number"]
 
             # Attach matching block geometry to any fields that still lack rect/font_height_px
             for class_key in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"]:
@@ -1136,7 +1181,7 @@ class FieldClassifier:
                         if r_text.lower() in bt.lower() or bt.lower() in r_text.lower():
                             best_b = b
                             break
-                        if HAS_RAPIDFUZZ:
+                        if HAS_RAPIDFUZZ and fuzz is not None:
                             sc = fuzz.partial_ratio(r_text.lower(), bt.lower())
                             if sc > best_score and sc >= 60:
                                 best_score = sc

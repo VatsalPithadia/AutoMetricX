@@ -112,7 +112,7 @@ class LMPCPdfReportGenerator:
         legibility = report.get("font_legibility_analysis", {})
 
         # Header Title Banner
-        story.append(Paragraph("MetroLens Legal Metrology Inspection Certificate", self.title_style))
+        story.append(Paragraph("Auto MatriX Legal Metrology Inspection Certificate", self.title_style))
         story.append(Paragraph("Legal Metrology (Packaged Commodities) Rules Compliance Audit Report", self.subtitle_style))
         story.append(Spacer(1, 8))
         story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#0284C7'), spaceBefore=2, spaceAfter=8))
