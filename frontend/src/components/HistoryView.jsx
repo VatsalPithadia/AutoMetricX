@@ -157,7 +157,8 @@ export default function HistoryView({ onSelectScan }) {
                   <th className="py-2.5 px-4"># ID</th>
                   <th className="py-2.5 px-4">Product Name</th>
                   <th className="py-2.5 px-4">Date / Time</th>
-                  <th className="py-2.5 px-4">Status</th>
+                  <th className="py-2.5 px-4">LMPC Status</th>
+                  <th className="py-2.5 px-4">Ingredients Safety</th>
                   <th className="py-2.5 px-4">Score</th>
                   <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
@@ -185,6 +186,24 @@ export default function HistoryView({ onSelectScan }) {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${getStatusBadge(scan.overall_status)}`}>
                         {scan.overall_status}
                       </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      {scan.ingredient_verdict && scan.ingredient_verdict !== 'NOT_CHECKED' ? (
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
+                          scan.ingredient_verdict === 'SAFE'
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                            : scan.ingredient_verdict === 'CAUTION'
+                            ? 'bg-amber-100 text-amber-800 border-amber-200'
+                            : 'bg-rose-100 text-rose-800 border-rose-200'
+                        }`}>
+                          {scan.ingredient_verdict === 'SAFE' && '✓ SAFE'}
+                          {scan.ingredient_verdict === 'CAUTION' && '⚠️ CAUTION'}
+                          {scan.ingredient_verdict === 'HARMFUL' && '⚠️ HARMFUL'}
+                          {scan.ingredient_score != null && ` (${scan.ingredient_score})`}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-gray-400 italic">—</span>
+                      )}
                     </td>
                     <td className="py-3 px-4 font-mono font-bold text-gray-800">
                       {scan.compliance_score}%

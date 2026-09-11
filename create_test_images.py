@@ -51,8 +51,10 @@ def create_synthetic_labels():
     y += 60
     draw1.text((100, y), "Tea Garden Road, Jorhat, Assam - 785001", font=body_font, fill=(210, 210, 210))
     y += 90
+    draw1.text((100, y), "Ingredients: 100% Pure Orthodox Whole Leaf Assam Black Tea", font=body_font, fill=(210, 255, 210))
+    y += 80
     draw1.text((100, y), "Customer Care: 1800-123-4567 | email: care@royaltea.com", font=body_font, fill=(210, 210, 210))
-    y += 90
+    y += 80
     draw1.text((100, y), "FSSAI Lic. No. 10321012000456", font=body_font, fill=(255, 215, 0))
 
     img1_cv = cv2.cvtColor(np.array(img1), cv2.COLOR_RGB2BGR)
@@ -96,8 +98,10 @@ def create_synthetic_labels():
     y += 60
     draw_tb.text((100, y), "Tea Garden Road, Jorhat, Assam - 785001", font=body_font, fill=(210, 210, 210))
     y += 90
+    draw_tb.text((100, y), "Ingredients: 100% Pure Orthodox Whole Leaf Assam Black Tea", font=body_font, fill=(210, 255, 210))
+    y += 80
     draw_tb.text((100, y), "Customer Care: 1800-123-4567 | email: care@royaltea.com", font=body_font, fill=(210, 210, 210))
-    y += 90
+    y += 80
     draw_tb.text((100, y), "FSSAI Lic. No. 10321012000456", font=body_font, fill=(255, 215, 0))
 
     cv2.imwrite(os.path.join(test_dir, "tea_back_label.jpg"), cv2.cvtColor(np.array(img_tb), cv2.COLOR_RGB2BGR))
@@ -122,6 +126,8 @@ def create_synthetic_labels():
     y += 60
     draw2.text((120, y), "EXP: JUN 2026", font=body_font, fill=(40, 40, 40))
     y += 80
+    draw2.text((120, y), "Ingredients: Refined Wheat Flour, Palm Oil, Sugar, TBHQ (INS 319), Tartrazine (INS 102), Salt", font=body_font, fill=(180, 50, 50))
+    y += 70
     draw2.text((120, y), "Manufactured by: Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604", font=body_font, fill=(50, 50, 50))
     y += 70
     draw2.text((120, y), "For Feedback Contact: 022-25801234 | care@goldenbakery.in", font=body_font, fill=(50, 50, 50))
@@ -163,6 +169,8 @@ def create_synthetic_labels():
     y += 60
     draw_bb.text((100, y), "EXP: JUN 2026", font=body_font, fill=(40, 40, 40))
     y += 80
+    draw_bb.text((100, y), "Ingredients: Refined Wheat Flour, Palm Oil, Sugar, TBHQ (INS 319), Tartrazine (INS 102), Salt", font=body_font, fill=(180, 50, 50))
+    y += 70
     draw_bb.text((100, y), "Manufactured by: Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604", font=body_font, fill=(50, 50, 50))
     y += 70
     draw_bb.text((100, y), "For Feedback Contact: 022-25801234 | care@goldenbakery.in", font=body_font, fill=(50, 50, 50))
@@ -170,6 +178,34 @@ def create_synthetic_labels():
     draw_bb.text((100, y), "FSSAI Lic. No. 11518014000890", font=body_font, fill=(30, 100, 50))
 
     cv2.imwrite(os.path.join(test_dir, "biscuit_back_label.jpg"), cv2.cvtColor(np.array(img_bb), cv2.COLOR_RGB2BGR))
+
+    # =========================================================================
+    # 7. Harmful Snack Chips Label
+    # =========================================================================
+    img_chips = Image.new('RGB', (1600, 1300), color=(28, 22, 20))
+    draw_c = ImageDraw.Draw(img_chips)
+    draw_c.rectangle([(40, 40), (1560, 1260)], outline=(225, 29, 72), width=5)
+
+    y = 100
+    draw_c.text((100, y), "CRUNCHY CHIPZ SPICY MASALA", font=title_font, fill=(244, 63, 94))
+    y += 110
+    draw_c.text((100, y), "Generic Commodity: Potato Wafers / Snack", font=header_font, fill=(255, 255, 255))
+    y += 90
+    draw_c.text((100, y), "Net Quantity: 150 g", font=header_font, fill=(255, 255, 255))
+    y += 90
+    draw_c.text((100, y), "MRP Rs. 40.00 (Incl. of all taxes)", font=header_font, fill=(255, 255, 255))
+    y += 90
+    draw_c.text((100, y), "Ingredients: Refined Wheat Flour, Palm Oil, TBHQ (INS 319), Tartrazine (INS 102), MSG (INS 621), Partially Hydrogenated Vegetable Oil, Salt", font=body_font, fill=(252, 165, 165))
+    y += 80
+    draw_c.text((100, y), "Mfg Date: DEC 2025 | Expiry Date: NOV 2026", font=body_font, fill=(220, 220, 220))
+    y += 70
+    draw_c.text((100, y), "Manufactured by: Snack Foods Ltd, GIDC Industrial Estate, Surat, Gujarat - 395001", font=body_font, fill=(200, 200, 200))
+    y += 70
+    draw_c.text((100, y), "Customer Care: 1800-888-9999 | email: care@chipz.in", font=body_font, fill=(200, 200, 200))
+    y += 70
+    draw_c.text((100, y), "FSSAI Lic. No. 10721014000321", font=body_font, fill=(251, 191, 36))
+
+    cv2.imwrite(os.path.join(test_dir, "snack_chips_label.jpg"), cv2.cvtColor(np.array(img_chips), cv2.COLOR_RGB2BGR))
 
     print("Created high-precision single-side & multi-side synthetic test images in test_images/ successfully.")
 

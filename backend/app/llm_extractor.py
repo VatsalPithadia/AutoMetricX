@@ -79,7 +79,8 @@ Extract the following fields accurately:
 8. manufacturer_details: string or null (Full name and complete multi-line address of manufacturer/packer/importer including Industrial Area / GIDC, City, State, and 6-digit PIN code)
 9. consumer_care: string or null (Complete consumer care details: Toll-Free 1800 number, phone, email address, customer executive, and postal address for complaints)
 10. fssai_number: string or null (14-digit FSSAI license number)
-11. detected_languages: list of strings (e.g. ["English", "Gujarati", "Hindi"])
+11. ingredients: string or null (Complete list of ingredients, e.g. "Wheat Flour, Palm Oil, Sugar, Salt, Artificial Flavor (INS 102), Antioxidant (INS 319)")
+12. detected_languages: list of strings (e.g. ["English", "Gujarati", "Hindi"])
 
 Return ONLY valid JSON matching this exact structure:
 {
@@ -93,6 +94,7 @@ Return ONLY valid JSON matching this exact structure:
   "manufacturer_details": string or null,
   "consumer_care": string or null,
   "fssai_number": string or null,
+  "ingredients": string or null,
   "detected_languages": ["English"]
 }
 """
@@ -147,6 +149,7 @@ Return ONLY valid JSON matching this exact structure:
         mrp_info = self._search_mrp(norm_text)
         qty_info = self._search_net_quantity(norm_text)
         commodity_info = self._search_commodity_name(lines, text)
+        ingredients_info = self._search_ingredients(lines, text)
 
         # Detect scripts present
         detected_langs = []
@@ -166,6 +169,7 @@ Return ONLY valid JSON matching this exact structure:
             "manufacturer_details": mfg_info.get("raw_text"),
             "consumer_care": consumer_care_info.get("formatted"),
             "fssai_number": fssai_info.get("license_number"),
+            "ingredients": ingredients_info.get("raw_text"),
             "detected_languages": detected_langs,
             "deep_search_details": {
                 "consumer_care": consumer_care_info,
@@ -173,7 +177,8 @@ Return ONLY valid JSON matching this exact structure:
                 "fssai": fssai_info,
                 "dates": dates_info,
                 "mrp": mrp_info,
-                "net_quantity": qty_info
+                "net_quantity": qty_info,
+                "ingredients": ingredients_info
             }
         }
 
@@ -641,5 +646,48 @@ Return ONLY valid JSON matching this exact structure:
                 if not any(ex in l_upper for ex in ["PER 100G", "INGREDIENTS", "NET QTY", "MRP", "MFG"]):
                     res["name"] = line.strip()
                     break
+
+        return res
+
+    # =========================================================================
+    # 8. Ingredients List Search
+    # =========================================================================
+    def _search_ingredients(self, lines: List[str], text: str) -> Dict[str, Any]:
+        """
+        Locates ingredient declaration blocks across English, Hindi, and Gujarati.
+        """
+        res = {"raw_text": None, "confidence": 0.0}
+        stop_headers = [
+            "NUTRITION", "NUTRITIONAL", "MFG", "PKD", "MFD", "MRP", "BEST BEFORE",
+            "EXPIRY", "BATCH", "NET QTY", "NET WT", "FSSAI", "MARKETED BY",
+            "MANUFACTURED BY", "CUSTOMER CARE", "STORAGE", "ALLERGEN ADVICE",
+            "LIC NO", "UNIT SALE PRICE"
+        ]
+
+        header_patterns = [
+            r"(?:INGREDIENTS\s*(?:USED)?|INGREDIENT\s*LIST|CONTAINS|COMPOSITION|सामग्री|ઘટકો)\s*[:\-–—]\s*(.+)",
+            r"\bINGREDIENTS\b\s*[:\-–—]?\s*(.+)",
+            r"\bCONTAINS\b\s*[:\-–—]\s*(.+)",
+            r"\bMADE FROM\b\s*[:\-–—]\s*(.+)"
+        ]
+
+        for i, line in enumerate(lines):
+            for pat in header_patterns:
+                m = re.search(pat, line, re.IGNORECASE)
+                if m:
+                    extracted = m.group(1).strip()
+                    # Collect following lines
+                    j = i + 1
+                    while j < len(lines):
+                        nl = lines[j]
+                        if any(nl.upper().startswith(sh) for sh in stop_headers):
+                            break
+                        if re.match(r"^(\d{10,14}|[A-Z0-9]{6,12})$", nl):
+                            break
+                        extracted += " " + nl
+                        j += 1
+                    res["raw_text"] = extracted.strip()
+                    res["confidence"] = 0.85
+                    return res
 
         return res

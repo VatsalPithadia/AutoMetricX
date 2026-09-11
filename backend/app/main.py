@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from contextlib import asynccontextmanager
 from typing import List, Optional
+from pydantic import BaseModel
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, FileResponse
@@ -26,6 +27,7 @@ from app.rule_engine import LMPCRuleEngine
 from app.pdf_generator import LMPCPdfReportGenerator
 from app.barcode_engine import BarcodeQREngine
 from app.product_checker import ProductConsistencyChecker
+from app.ingredient_checker import IngredientSafetyEngine
 
 # Create database tables if they do not exist
 Base.metadata.create_all(bind=engine)
@@ -102,6 +104,7 @@ rule_checker = LMPCRuleEngine(RULES_PATH)
 pdf_generator = LMPCPdfReportGenerator()
 barcode_engine = BarcodeQREngine()
 consistency_checker = ProductConsistencyChecker()
+ingredient_engine = IngredientSafetyEngine()
 
 
 @app.get("/")
@@ -166,6 +169,23 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     decoded_codes = barcode_engine.decode_barcodes_and_qr(cv_img) if cv_img is not None else []
     barcode_qr_analysis = barcode_engine.verify_cross_check(decoded_codes, classified_fields)
 
+    # 5. Ingredient Extraction & Toxicological Safety Analysis
+    extracted_ing_text, extracted_ing_list = ingredient_engine.extract_ingredients_from_text(
+        ocr_result["raw_text"],
+        ocr_blocks
+    )
+    # Check if classifier or Gemini also identified ingredients text
+    llm_ing = classified_fields.get("ingredients")
+    target_ing_text = extracted_ing_text or (llm_ing if isinstance(llm_ing, str) else "")
+
+    comm_name = classified_fields.get("commodity_name", {})
+    clean_comm = (comm_name.get("clean_name") or comm_name.get("raw_text")) if isinstance(comm_name, dict) else None
+
+    ingredient_safety = ingredient_engine.evaluate_ingredients(
+        target_ing_text,
+        commodity_name=clean_comm
+    )
+
     return {
         "engine": ocr_result["engine"],
         "image_metadata": ocr_result["image_metadata"],
@@ -177,7 +197,8 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
         "has_vertical_text": ocr_result.get("has_vertical_text", False),
         "classified_fields": classified_fields,
         "compliance_report": compliance_report,
-        "barcode_qr_analysis": barcode_qr_analysis
+        "barcode_qr_analysis": barcode_qr_analysis,
+        "ingredient_safety": ingredient_safety
     }
 
 @app.post("/scan")
@@ -298,6 +319,25 @@ async def scan_label_image(
         overall_status = final_report["overall_status"]
         compliance_score = float(final_report["compliance_score"])
 
+        # Unified Ingredient Safety Evaluation across package sides
+        all_ing_texts = []
+        for s in side_results:
+            ing_eval = s.get("ingredient_safety", {})
+            if ing_eval.get("has_ingredients") and ing_eval.get("raw_ingredients_text"):
+                all_ing_texts.append(ing_eval["raw_ingredients_text"])
+            elif s.get("classified_fields", {}).get("ingredients"):
+                all_ing_texts.append(str(s["classified_fields"]["ingredients"]))
+
+        combined_ing_text = " ".join(all_ing_texts).strip() if all_ing_texts else ""
+        if not combined_ing_text and combined_raw_text:
+            extracted_txt, _ = ingredient_engine.extract_ingredients_from_text(combined_raw_text, combined_blocks)
+            combined_ing_text = extracted_txt
+
+        final_ingredient_safety = ingredient_engine.evaluate_ingredients(
+            combined_ing_text,
+            commodity_name=product_name
+        )
+
         result_payload = {
             "success": True,
             "is_multiside": len(side_results) > 1,
@@ -327,6 +367,7 @@ async def scan_label_image(
             "has_vertical_text": any(s.get("has_vertical_text", False) for s in side_results),
             "compliance_report": final_report,
             "barcode_qr_analysis": combined_barcode,
+            "ingredient_safety": final_ingredient_safety,
             "product_consistency": {
                 "is_consistent": True,
                 "confidence": 0.95,
@@ -355,6 +396,19 @@ async def scan_label_image(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(err)}")
 
+class IngredientCheckRequest(BaseModel):
+    ingredients_text: Optional[str] = None
+    ingredients: Optional[List[str]] = None
+    product_name: Optional[str] = None
+
+@app.post("/check-ingredients")
+def check_ingredients_endpoint(req: IngredientCheckRequest):
+    """
+    Direct endpoint to evaluate safety and toxicity of a given ingredients list or text.
+    """
+    input_val = req.ingredients if req.ingredients else (req.ingredients_text or "")
+    return ingredient_engine.evaluate_ingredients(input_val, commodity_name=req.product_name)
+
 @app.get("/scans")
 def list_past_scans(
     search: Optional[str] = Query(None, description="Search by product name"),
@@ -374,17 +428,35 @@ def list_past_scans(
 
     scans = query.order_by(ScanRecord.id.desc()).all()
 
-    return [
-        {
+    results = []
+    for s in scans:
+        ing_verdict = "NOT_CHECKED"
+        ing_score = None
+        is_harmful = False
+        try:
+            if s.full_report_json:
+                data = json.loads(str(s.full_report_json))
+                ing_data = data.get("ingredient_safety", {})
+                if ing_data:
+                    ing_verdict = ing_data.get("safety_verdict", "NOT_CHECKED")
+                    ing_score = ing_data.get("safety_score")
+                    is_harmful = ing_data.get("is_harmful", False)
+        except Exception:
+            pass
+
+        results.append({
             "id": s.id,
             "timestamp": (s.timestamp.isoformat() + "Z") if s.timestamp else None,
             "image_filename": s.image_filename,
             "product_name": s.product_name,
             "overall_status": s.overall_status,
-            "compliance_score": s.compliance_score
-        }
-        for s in scans
-    ]
+            "compliance_score": s.compliance_score,
+            "ingredient_verdict": ing_verdict,
+            "ingredient_score": ing_score,
+            "is_harmful": is_harmful
+        })
+
+    return results
 
 @app.get("/scans/{scan_id}")
 def get_scan_detail(scan_id: int, db: Session = Depends(get_db)):

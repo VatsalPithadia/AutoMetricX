@@ -240,6 +240,99 @@ export default function ImageUploader({ selectedImages = [], onImagesSelected, o
     }, 'image/jpeg');
   };
 
+  // Generate Sample Label with Harmful Ingredients (TBHQ, Palm Oil, Tartrazine, Trans Fat)
+  const loadHarmfulIngredientsDemo = () => {
+    const c = document.createElement('canvas');
+    c.width = 800;
+    c.height = 640;
+    const ctx = c.getContext('2d');
+
+    ctx.fillStyle = '#1e1b18';
+    ctx.fillRect(0, 0, 800, 640);
+    ctx.strokeStyle = '#e11d48';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(15, 15, 770, 610);
+
+    ctx.fillStyle = '#f43f5e';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText('CRUNCHY CHIPZ SPICY MASALA', 40, 70);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText('Generic Commodity: Potato Wafers / Snack', 40, 125);
+    ctx.fillText('Net Quantity: 150 g', 40, 175);
+    ctx.fillText('MRP Rs. 40.00 (Incl. of all taxes)', 40, 225);
+
+    ctx.fillStyle = '#fca5a5';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('INGREDIENTS:', 40, 280);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px Arial';
+    ctx.fillText('Refined Wheat Flour, Palm Oil, TBHQ (INS 319), Tartrazine (INS 102),', 40, 310);
+    ctx.fillText('Monosodium Glutamate (INS 621), Partially Hydrogenated Vegetable Oil, Salt, Spices', 40, 335);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '14px Arial';
+    ctx.fillText('Mfg Date: DEC 2025 | Expiry Date: NOV 2026', 40, 395);
+    ctx.fillText('Mfd By: Snack Foods Ltd, GIDC Industrial Estate, Surat, Gujarat - 395001', 40, 440);
+    ctx.fillText('Customer Care: 1800-888-9999 | email: care@chipz.in', 40, 485);
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('FSSAI Lic. No. 10721014000321', 40, 540);
+
+    c.toBlob((blob) => {
+      const f = new File([blob], 'harmful_snack_label.jpg', { type: 'image/jpeg' });
+      processFiles([f]);
+    }, 'image/jpeg', 0.95);
+  };
+
+  // Generate Sample Label with 100% Safe Natural Organic Ingredients
+  const loadSafeOrganicDemo = () => {
+    const c = document.createElement('canvas');
+    c.width = 800;
+    c.height = 640;
+    const ctx = c.getContext('2d');
+
+    ctx.fillStyle = '#14281d';
+    ctx.fillRect(0, 0, 800, 640);
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(15, 15, 770, 610);
+
+    ctx.fillStyle = '#34d399';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText('ORGANIC ROYAL OATS & HONEY', 40, 70);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Arial';
+    ctx.fillText('Generic Commodity: 100% Whole Rolled Oats', 40, 125);
+    ctx.fillText('Net Quantity: 500 g', 40, 175);
+    ctx.fillText('MRP Rs. 195.00 (Incl. of all taxes)', 40, 225);
+
+    ctx.fillStyle = '#a7f3d0';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('INGREDIENTS:', 40, 280);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px Arial';
+    ctx.fillText('100% Organic Rolled Oats, Raw Honey, Roasted Almonds, Whole Chia Seeds, Natural Vanilla Extract', 40, 315);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '14px Arial';
+    ctx.fillText('Mfg Date: JAN 2026 | Expiry Date: DEC 2026', 40, 380);
+    ctx.fillText('Mfd By: Organic Valley Foods Ltd, Pune, Maharashtra - 411001', 40, 430);
+    ctx.fillText('Customer Care: 1800-444-1111 | email: help@organicvalley.in', 40, 480);
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('FSSAI Lic. No. 11520015000456', 40, 535);
+
+    c.toBlob((blob) => {
+      const f = new File([blob], 'safe_organic_oats.jpg', { type: 'image/jpeg' });
+      processFiles([f]);
+    }, 'image/jpeg', 0.95);
+  };
+
   const hasImages = selectedImages.length > 0;
 
   return (
@@ -296,10 +389,28 @@ export default function ImageUploader({ selectedImages = [], onImagesSelected, o
 
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); loadMultiSideDemo(); }}
-            className="px-3.5 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold text-xs hover:bg-emerald-100 transition-colors cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); loadHarmfulIngredientsDemo(); }}
+            className="px-3.5 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 font-semibold text-xs hover:bg-rose-100 transition-colors cursor-pointer"
+            title="Generates a snack label with Palm Oil, TBHQ, Tartrazine and Trans Fats to test harmful ingredient detection"
           >
-            ★ Try Multi-Side Demo (Front + Back)
+            ★ Try Harmful Ingredients Demo
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); loadSafeOrganicDemo(); }}
+            className="px-3.5 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold text-xs hover:bg-emerald-100 transition-colors cursor-pointer"
+            title="Generates an organic oats label with 100% wholesome natural ingredients"
+          >
+            ★ Try Safe Organic Demo
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); loadMultiSideDemo(); }}
+            className="px-3.5 py-2 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 font-semibold text-xs hover:bg-blue-100 transition-colors cursor-pointer"
+          >
+            Multi-Side Demo (Front + Back)
           </button>
 
           <button

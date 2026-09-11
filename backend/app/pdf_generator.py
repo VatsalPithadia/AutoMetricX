@@ -278,8 +278,67 @@ class LMPCPdfReportGenerator:
             story.append(Paragraph(f"<b>Rule 9(1) MRP Prominence Ratio:</b> {r9_p_ratio}x. {r9_expl}", self.body_style))
             story.append(Spacer(1, 10))
 
-        # Section 3: Actionable Remediation Guidance & Inspector Signature Box
-        story.append(Paragraph("3. Remediation & Officer Certification", self.heading2_style))
+        # Section 3: Ingredient Safety & Hazard Verification
+        ing_safety = scan_result.get("ingredient_safety")
+        if ing_safety and ing_safety.get("has_ingredients"):
+            story.append(Paragraph("3. Product Ingredient Safety & Hazard Verification", self.heading2_style))
+            
+            verdict = ing_safety.get("safety_verdict", "SAFE")
+            score_val = ing_safety.get("safety_score", 100)
+            summary_txt = ing_safety.get("summary", "")
+            
+            v_fg = colors.HexColor('#166534') if verdict == 'SAFE' else (colors.HexColor('#92400E') if verdict == 'CAUTION' else colors.HexColor('#991B1B'))
+            v_bg = colors.HexColor('#DCFCE7') if verdict == 'SAFE' else (colors.HexColor('#FEF3C7') if verdict == 'CAUTION' else colors.HexColor('#FEE2E2'))
+
+            ing_meta_data = [
+                [
+                    Paragraph(f"<b>Safety Verdict:</b> <font color='{v_fg.hexval()}'><b>{verdict}</b></font>", self.body_style),
+                    Paragraph(f"<b>Health Safety Score:</b> <b>{score_val} / 100</b>", self.body_style),
+                    Paragraph(f"<b>Total Ingredients:</b> {ing_safety.get('total_ingredients_count', 0)} ({ing_safety.get('harmful_count', 0)} Harmful, {ing_safety.get('caution_count', 0)} Caution)", self.body_style)
+                ]
+            ]
+            ing_meta_table = Table(ing_meta_data, colWidths=[180, 160, 200])
+            ing_meta_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), v_bg),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOX', (0, 0), (-1, -1), 1, v_fg),
+                ('PADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(ing_meta_table)
+            story.append(Spacer(1, 4))
+            story.append(Paragraph(f"<b>Safety Summary:</b> {summary_txt}", self.body_style))
+            story.append(Spacer(1, 6))
+
+            flagged = ing_safety.get("flagged_ingredients", [])
+            if flagged:
+                ing_headers = [
+                    Paragraph("<b>Harmful Ingredient</b>", self.table_header_style),
+                    Paragraph("<b>Severity</b>", self.table_header_style),
+                    Paragraph("<b>Hazard Classification</b>", self.table_header_style),
+                    Paragraph("<b>Regulatory Status & Health Impact</b>", self.table_header_style)
+                ]
+                ing_rows = [ing_headers]
+                for f in flagged:
+                    sev = f.get("severity", "MODERATE")
+                    s_color = colors.HexColor('#991B1B') if sev == 'HIGH' else colors.HexColor('#92400E')
+                    ing_rows.append([
+                        Paragraph(f"<b>{f.get('name', '')}</b><br/><font size=7 color='#64748B'>{f.get('ins_code', '')}</font>", self.table_cell_bold),
+                        Paragraph(f"<b>{sev}</b>", ParagraphStyle('SevCell', parent=self.table_cell_bold, textColor=s_color, alignment=TA_CENTER)),
+                        Paragraph(f.get("hazard_type", ""), self.table_cell_style),
+                        Paragraph(f"<b>{f.get('regulatory_status', '')}:</b> {f.get('risk_explanation', '')}", self.table_cell_style)
+                    ])
+                ing_table = Table(ing_rows, colWidths=[130, 60, 140, 210])
+                ing_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#334155')),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+                    ('PADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(ing_table)
+                story.append(Spacer(1, 8))
+
+        # Section 4: Actionable Remediation Guidance & Inspector Signature Box
+        story.append(Paragraph("4. Remediation & Officer Certification", self.heading2_style))
         remediation_items = []
         for decl in declarations:
             if decl.get("status") != "PASS":
