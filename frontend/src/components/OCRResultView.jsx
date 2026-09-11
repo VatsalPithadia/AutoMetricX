@@ -132,9 +132,8 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             <span className="text-xs px-2.5 py-1 rounded-md bg-gray-100 text-gray-700 font-medium">
               Min Required: <strong className="text-gray-900">{minReq} mm</strong> ({declaredWeightStr})
             </span>
-            <span className={`text-xs font-bold px-2.5 py-1 rounded-md ${
-              allPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-            }`}>
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-md ${allPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+              }`}>
               {allPass ? '✓ ALL PASS' : '⚠️ REVIEW HEIGHTS'}
             </span>
           </div>
@@ -170,9 +169,8 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                         {req} mm
                       </td>
                       <td className="py-2.5 px-3 text-right">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                          isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-                        }`}>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}>
                           {isPass ? 'PASS' : 'BELOW MIN'}
                         </span>
                       </td>
@@ -193,9 +191,8 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                 MRP height ({rule9.mrp_font_height_mm != null ? `${rule9.mrp_font_height_mm} mm` : '—'}) vs surrounding text ({rule9.avg_body_font_height_mm != null ? `${rule9.avg_body_font_height_mm} mm` : '—'}) • Ratio: <strong>{rule9.prominence_ratio || 1.0}x</strong> (Required: ≥ 1.20x)
               </span>
             </div>
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase shrink-0 ${
-              rule9.status === 'PASS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-            }`}>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase shrink-0 ${rule9.status === 'PASS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+              }`}>
               {rule9.status === 'PASS' ? 'PROMINENT' : 'LOW PROMINENCE'}
             </span>
           </div>
@@ -206,10 +203,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6">
-      
+
       {/* Top Header Card */}
       <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4 shadow-sm">
-        
+
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -261,25 +258,22 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
         <div className="flex items-center gap-2 border-b border-gray-100 pb-1 flex-wrap">
           <button
             onClick={() => setActiveTab('compliance')}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-              activeTab === 'compliance' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${activeTab === 'compliance' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
           >
             Compliance Declarations
           </button>
           <button
             onClick={() => setActiveTab('overlay')}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-              activeTab === 'overlay' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${activeTab === 'overlay' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
           >
             {isMultiSide ? `Label Image (${result.total_sides} Sides)` : 'Label Image'}
           </button>
           <button
             onClick={() => setActiveTab('raw')}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-              activeTab === 'raw' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${activeTab === 'raw' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
           >
             Raw Text
           </button>
@@ -290,7 +284,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
       {/* --- TAB 1: Compliance Declarations --- */}
       {activeTab === 'compliance' && (
         <div className="space-y-6">
-          
+
           {/* FSSAI License & Barcode / QR Code Box */}
           <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-3 shadow-sm">
             <div className="flex items-center justify-between">
@@ -303,11 +297,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                   <p className="text-[11px] text-gray-500">Food Safety Authority (FSSAI) & GS1 Digital Label Cross-Check</p>
                 </div>
               </div>
-              <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded-full ${
-                classified.fssai_number?.license_number || classified.fssai_number?.raw_text
+              <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded-full ${classified.fssai_number?.license_number || classified.fssai_number?.raw_text
                   ? 'bg-emerald-600 text-white'
                   : 'bg-amber-500 text-white'
-              }`}>
+                }`}>
                 {classified.fssai_number?.license_number ? '14-Digit Valid License' : 'FSSAI Status'}
               </span>
             </div>
@@ -402,7 +395,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                 </span>
               )}
             </div>
-            
+
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-xs">
               {[
                 { key: 'commodity_name', label: 'Commodity Name', getValue: (f) => f?.clean_name || f?.raw_text },
@@ -502,11 +495,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                   <button
                     key={idx}
                     onClick={() => { setActiveSideIdx(idx); setSelectedBlock(null); }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                      activeSideIdx === idx
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${activeSideIdx === idx
                         ? 'bg-gray-900 text-white'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
+                      }`}
                   >
                     Side {idx + 1}{side.filename ? ` (${side.filename.split('.')[0].slice(-12)})` : ''}
                   </button>

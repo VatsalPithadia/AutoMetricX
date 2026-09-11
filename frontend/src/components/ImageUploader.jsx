@@ -244,7 +244,7 @@ export default function ImageUploader({ selectedImages = [], onImagesSelected, o
 
   return (
     <div className="space-y-4">
-      
+
       {/* Hidden Multi-file input */}
       <input
         type="file"
@@ -261,9 +261,8 @@ export default function ImageUploader({ selectedImages = [], onImagesSelected, o
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl p-6 sm:p-8 text-center transition-all cursor-pointer bg-white ${
-          isDragging ? 'border-emerald-600 bg-emerald-50/50' : 'border-gray-300 hover:border-gray-400'
-        }`}
+        className={`border-2 border-dashed rounded-xl p-6 sm:p-8 text-center transition-all cursor-pointer bg-white ${isDragging ? 'border-emerald-600 bg-emerald-50/50' : 'border-gray-300 hover:border-gray-400'
+          }`}
       >
         <div className="space-y-1 mb-4">
           <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-gray-100 text-gray-700 mb-2">
@@ -317,7 +316,7 @@ export default function ImageUploader({ selectedImages = [], onImagesSelected, o
       {/* Uploaded Package Sides Strip */}
       {hasImages && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-4 shadow-sm">
-          
+
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
