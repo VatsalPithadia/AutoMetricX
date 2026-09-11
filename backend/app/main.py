@@ -166,7 +166,7 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     )
 
     # 4. Barcode & QR code cross-check with 6-stage recovery filter bank
-    decoded_codes = barcode_engine.decode_barcodes_and_qr(cv_img) if cv_img is not None else []
+    decoded_codes = barcode_engine.decode_barcodes_and_qr(cv_img, ocr_blocks=ocr_blocks) if cv_img is not None else []
     barcode_qr_analysis = barcode_engine.verify_cross_check(decoded_codes, classified_fields)
 
     # 5. Ingredient Extraction & Toxicological Safety Analysis
@@ -176,7 +176,13 @@ def _process_single_image_bytes(contents: bytes, filename: str) -> dict:
     )
     # Check if classifier or Gemini also identified ingredients text
     llm_ing = classified_fields.get("ingredients")
-    target_ing_text = extracted_ing_text or (llm_ing if isinstance(llm_ing, str) else "")
+    ing_raw = llm_ing.get("raw_text", "") if isinstance(llm_ing, dict) else (llm_ing if isinstance(llm_ing, str) else "")
+    target_ing_text = extracted_ing_text or ing_raw
+    if not classified_fields.get("ingredients") and target_ing_text:
+        classified_fields["ingredients"] = {
+            "raw_text": target_ing_text,
+            "confidence": 0.85
+        }
 
     comm_name = classified_fields.get("commodity_name", {})
     clean_comm = (comm_name.get("clean_name") or comm_name.get("raw_text")) if isinstance(comm_name, dict) else None
@@ -326,12 +332,21 @@ async def scan_label_image(
             if ing_eval.get("has_ingredients") and ing_eval.get("raw_ingredients_text"):
                 all_ing_texts.append(ing_eval["raw_ingredients_text"])
             elif s.get("classified_fields", {}).get("ingredients"):
-                all_ing_texts.append(str(s["classified_fields"]["ingredients"]))
+                ing_field = s["classified_fields"]["ingredients"]
+                raw_ing = ing_field.get("raw_text") if isinstance(ing_field, dict) else str(ing_field)
+                if raw_ing:
+                    all_ing_texts.append(raw_ing)
 
         combined_ing_text = " ".join(all_ing_texts).strip() if all_ing_texts else ""
         if not combined_ing_text and combined_raw_text:
             extracted_txt, _ = ingredient_engine.extract_ingredients_from_text(combined_raw_text, combined_blocks)
             combined_ing_text = extracted_txt
+
+        if not merged_classified.get("ingredients") and combined_ing_text:
+            merged_classified["ingredients"] = {
+                "raw_text": combined_ing_text,
+                "confidence": 0.85
+            }
 
         final_ingredient_safety = ingredient_engine.evaluate_ingredients(
             combined_ing_text,

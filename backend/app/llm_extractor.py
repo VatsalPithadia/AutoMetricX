@@ -491,33 +491,53 @@ Return ONLY valid JSON matching this exact structure:
         batch_m = re.search(r'\b(?:BATCH(?:\s*(?:NO\.?|NUMBER))?|LOT(?:\s*NO\.?)?|B\.?\s*NO\.?|BNO|CH\.?\s*NO\.?|B\. NO|બેચ(?:\s*નંબર)?|લોટ(?:\s*નંબર)?)[\s:.-]*([A-Za-z0-9/-]+)\b', text, re.IGNORECASE)
         if batch_m:
             b_val = batch_m.group(1).strip()
-            if b_val.upper() not in ["NO", "NUMBER", "NUM", "DATE", "DT"]:
+            if b_val.upper() not in ["NO", "NUMBER", "NUM", "DATE", "DT", "USE", "PKD", "EXP", "OTHER", "RECYCLE", "PLASTIC", "PACKAGING"]:
                 res["batch_number"] = b_val
+        else:
+            # Leading coder token fallback (e.g. F29G1, C25J05E)
+            lead_m = re.search(r'\b([A-Z0-9]{4,8})\s+[0-3]?[0-9][/\-.]', text)
+            if lead_m:
+                cand = lead_m.group(1).strip()
+                if any(c.isdigit() for c in cand) and any(c.isalpha() for c in cand):
+                    res["batch_number"] = cand
 
         # 2. Relative Shelf-Life Search (e.g. "Best before 6 months from packaging")
-        rel_m = re.search(r'\b(BEST\s*BEFORE|CONSUME\s*WITHIN|USE\s*WITHIN)\s*(\d{1,2}\s*(?:MONTHS?|DAYS?|WEEKS?|YEARS?))\b', text, re.IGNORECASE)
+        rel_m = re.search(r'\b(BEST\s*BEFORE|CONSUME\s*WITHIN|USE\s*WITHIN)\s*(\d{1,2}\s*(?:MONTHS?|DAYS?|WEEKS?|YEARS?)(?:\s+FROM\s+[A-Z\s]+)?)\b', text, re.IGNORECASE)
         if rel_m:
-            res["relative_shelf_life"] = f"{rel_m.group(1)} {rel_m.group(2)}"
+            res["relative_shelf_life"] = rel_m.group(0).strip()
             res["expiry_date"] = res["relative_shelf_life"]
 
         # 3. Explicit Mfg / Packing Date
-        mfg_m = re.search(r'(?:MFG(?:\s*DATE)?|MFD(?:\s*DATE)?|PKD(?:\s*DATE)?|PACKED(?:\s*ON|\s*DATE)?|DOM|DATE\s*OF\s*(?:MFG|PACKAGING)|ઉત્પાદન\s*તારીખ|પેકિંગ\s*તારીખ|નિર્માણ\s*તિથિ)[\s:.-]*([0-3]?[0-9][/\-.][0-1]?[0-9][/\-.](?:20)?[1-3][0-9]|(?:0[1-9]|1[0-2])[/\-.](?:20)?[1-3][0-9]|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(?:20)?[1-3][0-9]\b)', text, re.IGNORECASE)
+        mfg_m = re.search(r'(?:MFG(?:\s*DATE)?|MFD(?:\s*DATE)?|PKD(?:\s*DATE)?|PACKED(?:\s*ON|\s*DATE)?|DOM|DATE\s*OF\s*(?:MFG|PACKAGING)|ઉત્પાદન\s*તારીખ|પેકિંગ\s*તારીખ|નિર્માણ\s*તિથિ)[\s:.-]*([0-3]?[0-9][/\-.](?:0?[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[/\-.](?:20)?[1-3][0-9]|(?:0?[1-9]|1[0-2])[/\-.](?:20)?[1-3][0-9]|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(?:20)?[1-3][0-9]\b)', text, re.IGNORECASE)
         if mfg_m:
             res["mfg_date"] = mfg_m.group(1).strip()
 
         # 4. Explicit Expiry / Use By Date
-        exp_m = re.search(r'(?:EXP(?:\s*DATE)?|EXPIRY(?:\s*DATE)?|USE\s*BY|BEST\s*BEFORE|BB|વાપરવાની\s*છેલ્લી\s*તારીખ|એક્સપાયરી|સમાપ્તિ\s*તિથિ|શ્રેષ્ઠ\s*ઉપયોગ|ઉપયોગ\s*તારીખ)[\s:.-]*([0-3]?[0-9][/\-.][0-1]?[0-9][/\-.](?:20)?[1-3][0-9]|(?:0[1-9]|1[0-2])[/\-.](?:20)?[1-3][0-9]|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(?:20)?[1-3][0-9]\b)', text, re.IGNORECASE)
+        exp_m = re.search(r'(?:EXP(?:\s*DATE)?|EXPIRY(?:\s*DATE)?|USE\s*BY|BEST\s*BEFORE|BB|વાપરવાની\s*છેલ્લી\s*તારીખ|એક્સપાયરી|સમાપ્તિ\s*તિથિ|શ્રેષ્ઠ\s*ઉપયોગ|ઉપયોગ\s*તારીખ)[\s:.-]*([0-3]?[0-9][/\-.](?:0?[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[/\-.](?:20)?[1-3][0-9]|(?:0?[1-9]|1[0-2])[/\-.](?:20)?[1-3][0-9]|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(?:20)?[1-3][0-9]\b)', text, re.IGNORECASE)
         if exp_m:
             res["expiry_date"] = exp_m.group(1).strip()
 
-        # 5. Dual Date Scan fallback (e.g. "OCT 2025" and "OCT 2026")
+        # 5. Dual Date Scan fallback (covers both textual months like "OCT 2025" / "SEP 2026" and numeric dates like "29/07/26" / "28/07/27")
         if not res["mfg_date"] or not res["expiry_date"]:
-            all_dates = re.findall(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(20[1-3][0-9]|[1-3][0-9])\b', text, re.IGNORECASE)
-            if len(all_dates) >= 2:
-                if not res["mfg_date"]: res["mfg_date"] = f"{all_dates[0][0].upper()}/{all_dates[0][1]}"
-                if not res["expiry_date"]: res["expiry_date"] = f"{all_dates[1][0].upper()}/{all_dates[1][1]}"
-            elif len(all_dates) == 1 and not res["mfg_date"]:
-                res["mfg_date"] = f"{all_dates[0][0].upper()}/{all_dates[0][1]}"
+            all_num_dates = re.findall(r'\b([0-3]?[0-9][/\-.][0-1]?[0-9][/\-.](?:20)?[1-3][0-9])\b', text)
+            all_text_dates = re.findall(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|0CT|NOV|DEC)[\s./-]*(20[1-3][0-9]|[1-3][0-9])\b', text, re.IGNORECASE)
+
+            if len(all_num_dates) >= 2:
+                if not res["mfg_date"]: res["mfg_date"] = all_num_dates[0]
+                if not res["expiry_date"]: res["expiry_date"] = all_num_dates[1]
+            elif len(all_text_dates) >= 2:
+                m1, y1 = all_text_dates[0]
+                m2, y2 = all_text_dates[1]
+                m1_norm = "OCT" if m1.upper() == "0CT" else m1.upper()
+                m2_norm = "OCT" if m2.upper() == "0CT" else m2.upper()
+                if not res["mfg_date"]: res["mfg_date"] = f"{m1_norm}/{y1}"
+                if not res["expiry_date"]: res["expiry_date"] = f"{m2_norm}/{y2}"
+            elif len(all_text_dates) == 1 and not res["mfg_date"]:
+                m1, y1 = all_text_dates[0]
+                m1_norm = "OCT" if m1.upper() == "0CT" else m1.upper()
+                res["mfg_date"] = f"{m1_norm}/{y1}"
+            elif len(all_num_dates) == 1 and not res["mfg_date"]:
+                res["mfg_date"] = all_num_dates[0]
 
         return res
 
@@ -623,28 +643,55 @@ Return ONLY valid JSON matching this exact structure:
     def _search_commodity_name(self, lines: List[str], text: str) -> Dict[str, Any]:
         """
         Identifies generic commodity name (e.g. Premium Black Tea, Besan, Whole Spices),
-        excluding recipes, cooking instructions, and nutrition facts tables.
+        strictly excluding prices/MRP, dates, allergen warnings, addresses, and recipe blocks.
         """
         res = {"name": None}
 
-        # 1. Explicit declaration check
+        # 1. Explicit statutory declaration check
         expl_m = re.search(r'(?:GENERIC\s*(?:COMMODITY)?(?:\s*NAME)?|COMMODITY|PRODUCT\s*(?:NAME)?|વસ્તુનું\s*નામ|ઉત્પાદન)[\s:.-]*([A-Za-z0-9\s.,\/-]{3,60})', text, re.IGNORECASE)
         if expl_m:
-            res["name"] = expl_m.group(1).strip()
-            return res
+            cand = expl_m.group(1).strip()
+            # Strip any trailing declarations banners / panel headers
+            cand = re.sub(r'[-–—_]?\s*(?:MANDATORY\s*)?DECLARATIONS?\b.*', '', cand, flags=re.IGNORECASE).strip()
+            cand = re.sub(r'[-–—_]?\s*(?:PACKET\s*)?(?:BACK|FRONT)\s*PANEL\b.*', '', cand, flags=re.IGNORECASE).strip()
+            cand = re.sub(r'[-–—_]?\s*PACKETBACKPANEL.*', '', cand, flags=re.IGNORECASE).strip()
+            cand = re.sub(r'[-–—_]?\s*MANDATORYDECLARATIONS?.*', '', cand, flags=re.IGNORECASE).strip()
+            cand = re.sub(r'^[-–—:.,\s]+|[-–—:.,\s]+$', '', cand).strip()
+            if len(cand) >= 3 and not re.search(r'\b(?:MRP|RS|TAX|EXP|MFG|NET\s*WT)\b', cand, re.IGNORECASE):
+                res["name"] = cand
+                return res
 
         # 2. Heuristic scan on top lines
         commodity_words = [
-            "TEA", "COFFEE", "MASALA", "SPICE", "ATTA", "BESAN", "FLOUR", "RICE",
-            "DAL", "OIL", "BISCUIT", "NOODLES", "CHIPS", "WAFER", "SALT", "SUGAR",
-            "SAUCE", "KETCHUP", "JAM", "PICKLE", "PANEER", "MILK", "CHOCOLATE"
+            "TEA", "COFFEE", "MASALA", "SPICE", "ATTA", "BESAN", "FLOUR", "NOODLES", "CHIPS", "WAFER",
+            "SAUCE", "KETCHUP", "JAM", "PICKLE", "PANEER", "CHOCOLATE", "BISCUIT", "COOKIES"
         ]
-        for line in lines[:6]:
+        negative_kws = [
+            "MRP", "RS", "₹", "INCL", "TAX", "MFG", "PKD", "EXP", "BATCH", "LOT", "NET WT", "NET QTY",
+            "FSSAI", "LIC NO", "REG. NO", "CARE", "CUSTOMER", "CONSUMER", "MANUFACTURED", "PACKED BY",
+            "CONTAINS", "ALLERGEN", "INGREDIENTS", "NUTRITION", "ACCEPT", "DAMAGED", "STORE IN", "KEEP IN"
+        ]
+
+        for line in lines[:8]:
             l_upper = line.upper()
+            if any(neg in l_upper for neg in negative_kws):
+                continue
+            if line.count(',') >= 2:
+                continue
+
+            words_alpha = re.findall(r'[A-Za-z]+', line)
+            # Exclude single isolated allergen/basic ingredient words
+            if len(words_alpha) == 1 and words_alpha[0].upper() in {'MILK', 'SALT', 'SUGAR', 'WATER', 'OIL', 'WHEAT', 'FLOUR', 'SOY'}:
+                continue
+
             if any(cw in l_upper for cw in commodity_words):
-                # Clean line
-                if not any(ex in l_upper for ex in ["PER 100G", "INGREDIENTS", "NET QTY", "MRP", "MFG"]):
-                    res["name"] = line.strip()
+                clean_l = re.sub(r'[-–—_]?\s*(?:MANDATORY\s*)?DECLARATIONS?\b.*', '', line, flags=re.IGNORECASE).strip()
+                clean_l = re.sub(r'[-–—_]?\s*(?:PACKET\s*)?(?:BACK|FRONT)\s*PANEL\b.*', '', clean_l, flags=re.IGNORECASE).strip()
+                clean_l = re.sub(r'[-–—_]?\s*PACKETBACKPANEL.*', '', clean_l, flags=re.IGNORECASE).strip()
+                clean_l = re.sub(r'[-–—_]?\s*MANDATORYDECLARATIONS?.*', '', clean_l, flags=re.IGNORECASE).strip()
+                clean_l = re.sub(r'^[-–—:.,\s]+|[-–—:.,\s]+$', '', clean_l).strip()
+                if 3 <= len(clean_l) <= 70:
+                    res["name"] = clean_l
                     break
 
         return res
@@ -656,7 +703,7 @@ Return ONLY valid JSON matching this exact structure:
         """
         Locates ingredient declaration blocks across English, Hindi, and Gujarati.
         """
-        res = {"raw_text": None, "confidence": 0.0}
+        res: Dict[str, Any] = {"raw_text": None, "confidence": 0.0}
         stop_headers = [
             "NUTRITION", "NUTRITIONAL", "MFG", "PKD", "MFD", "MRP", "BEST BEFORE",
             "EXPIRY", "BATCH", "NET QTY", "NET WT", "FSSAI", "MARKETED BY",

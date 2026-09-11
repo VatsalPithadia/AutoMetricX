@@ -536,7 +536,7 @@ class IngredientSafetyEngine:
                 return self._build_empty_report()
             ingredients = self._split_ingredients_respecting_parentheses(raw_text)
         else:
-            ingredients = [str(i).strip() for i in ingredients_input if str(i).strip()]
+            ingredients = [i.strip() for i in ingredients_input if i.strip()]
             raw_text = ", ".join(ingredients)
 
         if not ingredients and raw_text:
@@ -589,6 +589,7 @@ class IngredientSafetyEngine:
         for ing in ingredients:
             ing_status = "SAFE"
             ing_matched_hazard = None
+            ing_matched_allergen = None
 
             for h in flagged_harmful:
                 db_entry = next((item for item in self.harmful_db if item["canonical_name"] == h["name"]), None)
@@ -601,10 +602,24 @@ class IngredientSafetyEngine:
                 if ing_status != "SAFE":
                     break
 
+            if ing_status == "SAFE":
+                for a_entry in self.allergen_db:
+                    for pat in a_entry["patterns"]:
+                        if re.search(pat, ing, re.IGNORECASE):
+                            ing_status = "CAUTION"
+                            ing_matched_allergen = {
+                                "allergen": a_entry["allergen"],
+                                "risk": a_entry["risk"]
+                            }
+                            break
+                    if ing_matched_allergen:
+                        break
+
             categorized_ingredients.append({
                 "ingredient": ing,
                 "status": ing_status,
-                "hazard": ing_matched_hazard
+                "hazard": ing_matched_hazard,
+                "allergen": ing_matched_allergen
             })
 
         score = 100

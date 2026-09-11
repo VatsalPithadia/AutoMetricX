@@ -27,7 +27,7 @@ def detect_suspicious_matches(classified_fields: Dict[str, Any]) -> List[str]:
     # 1. Commodity Name checks
     comm = classified_fields.get("commodity_name")
     if comm:
-        raw_comm = comm.get("raw_text", "") if isinstance(comm, dict) else str(comm)
+        raw_comm = (comm.get("clean_name") or comm.get("raw_text", "")) if isinstance(comm, dict) else str(comm)
         # Suspicious if purely alphanumeric code with dashes/numbers or very short
         if re.search(r'^[A-Z0-9]{2,}-[A-Z0-9\-]+$', raw_comm):
             suspicious.append(f"commodity_name matched batch/product code: '{raw_comm}'")
@@ -120,7 +120,7 @@ def run_accuracy_benchmark() -> Dict[str, Any]:
             "compliance_score": compliance["compliance_score"],
             "suspicious_flags": suspicious_flags,
             "processing_time_sec": elapsed,
-            "classified_fields": {k: (v.get("raw_text") if isinstance(v, dict) else v) for k, v in classified.items() if v}
+            "classified_fields": {k: ((v.get("clean_name") or v.get("raw_text")) if isinstance(v, dict) else v) for k, v in classified.items() if v}
         }
         results.append(item_res)
         

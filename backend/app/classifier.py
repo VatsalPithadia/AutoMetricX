@@ -1,7 +1,10 @@
 import re
 import logging
+import datetime as _dt
+import math
 import numpy as np
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any, Optional, Set, Tuple, TypedDict, Callable
+
 try:
     from app.llm_extractor import LLMExtractor
 except (ImportError, ModuleNotFoundError):
@@ -14,7 +17,147 @@ except ImportError:
     fuzz = None
     HAS_RAPIDFUZZ = False
 
+class CoderDateCandidate(TypedDict):
+    formatted: str
+    year: int
+    raw: str
+    start: int
+    end: int
+
 logger = logging.getLogger("metrolens.classifier")
+
+def normalize_ocr_character_confusions(text: str) -> str:
+    """
+    Normalizes common dot-matrix, inkjet, and OCR character confusions on packaging:
+    - Standardizes comma decimal separator (e.g. '140,00' -> '140.00', '12,5 g' -> '12.5 g')
+    - Fixes broken MRP tags (e.g. 'M|RP', 'M.R.P:', 'MR P', 'M.R.P ;', 'MR.P')
+    - Fixes corrupted Net Qty keywords (e.g. 'Nct Wt', 'Nel Wt', 'Net Wf')
+    - Fixes numeric 0 in month names (e.g. '0CT' -> 'OCT')
+    - Fixes broken batch keywords (e.g. 'B.N0', 'B.No.', 'Ba[t]ch No')
+    """
+    if not text:
+        return ""
+    # 1. Decimal comma between numbers (e.g. 140,00 -> 140.00 or 12,5 g -> 12.5 g)
+    res = re.sub(r'(\d+),(\d{1,2})(?!\d)', r'\1.\2', text)
+
+    # 2. Corrupted MRP markers
+    res = re.sub(r'\bM[|/]\s*RP\b', 'MRP', res, flags=re.IGNORECASE)
+    res = re.sub(r'\bM\s*\.\s*R\s*\.\s*P\b', 'MRP', res, flags=re.IGNORECASE)
+    res = re.sub(r'\bMR\s+P\b', 'MRP', res, flags=re.IGNORECASE)
+
+    # 3. Corrupted Net Qty prefixes
+    res = re.sub(r'\bN[ce]t\s*W[tf]\b', 'Net Wt', res, flags=re.IGNORECASE)
+    res = re.sub(r'\bNel\s*W[tf]\b', 'Net Wt', res, flags=re.IGNORECASE)
+    res = re.sub(r'\bNel\s*Qty\b', 'Net Qty', res, flags=re.IGNORECASE)
+
+    # 4. Dot-matrix month confusion '0CT' -> 'OCT'
+    res = re.sub(r'\b0CT\b', 'OCT', res)
+
+    # 5. Corrupted Batch headers
+    res = re.sub(r'\bB\s*\.\s*N[0O]\b', 'B.NO', res, flags=re.IGNORECASE)
+
+    return res
+
+# Common statutory declaration labels that must NEVER be returned as a value of another field
+STATUTORY_LABEL_KEYWORDS = {
+    'MRP', 'M.R.P', 'MAX RETAIL PRICE', 'MAXIMUM RETAIL PRICE', 'PRICE',
+    'NET WT', 'NET WEIGHT', 'NET QTY', 'NET QUANTITY', 'NET VOL', 'N.W.',
+    'BATCH', 'BATCH NO', 'LOT', 'LOT NO', 'B.NO', 'BNO',
+    'MFG', 'MFG DATE', 'DATE OF MFG', 'DATE OF PACKAGING', 'PKD', 'PACKED',
+    'USE BY', 'EXP', 'EXPIRY', 'EXP DATE', 'BEST BEFORE',
+    'INCL OF ALL TAXES', 'INCL. OF ALL TAXES', 'INCL.OFALLTAXES', 'INCLUSIVE OF ALL TAXES',
+    'UNIT SALE PRICE', 'USP'
+}
+
+def is_statutory_label_block(text: str) -> bool:
+    if not text:
+        return False
+    cl = re.sub(r'[^A-Z0-9]', '', text.upper())
+    for kw in STATUTORY_LABEL_KEYWORDS:
+        kw_cl = re.sub(r'[^A-Z0-9]', '', kw)
+        if cl == kw_cl or cl.startswith(kw_cl + ':') or cl.startswith(kw_cl + '.'):
+            return True
+    return False
+
+def find_adjacent_value_block(
+    anchor_block: Dict[str, Any],
+    candidate_blocks: List[Dict[str, Any]],
+    max_horizontal_px: float = 360.0,
+    max_vertical_px: float = 120.0,
+    excluded_ids: Optional[Set[Any]] = None,
+    value_validator: Optional[Callable[[Dict[str, Any], str], bool]] = None,
+    prefer_horizontal: bool = True
+) -> Optional[Dict[str, Any]]:
+    """
+    Finds the spatially closest neighboring block immediately to the right or below an anchor block.
+    Solves the 2-column or 2-row table packaging layout where key and value are separated
+    (e.g., Column 1: 'NET WEIGHT:' -> Column 2: '1.1 kg').
+    """
+    a_rect = anchor_block.get("rect")
+    if not a_rect:
+        return None
+
+    a_x = float(a_rect.get("x", 0.0))
+    a_y = float(a_rect.get("y", 0.0))
+    a_w = float(a_rect.get("width", 0.0))
+    a_h = float(a_rect.get("height", 0.0))
+    a_id = anchor_block.get("id")
+
+    best_cand: Optional[Dict[str, Any]] = None
+    min_dist = float("inf")
+
+    for cand in candidate_blocks:
+        c_id = cand.get("id")
+        if c_id == a_id or (excluded_ids is not None and c_id in excluded_ids):
+            continue
+        c_rect = cand.get("rect")
+        if not c_rect:
+            continue
+        c_x = float(c_rect.get("x", 0.0))
+        c_y = float(c_rect.get("y", 0.0))
+        c_w = float(c_rect.get("width", 0.0))
+        c_h = float(c_rect.get("height", 0.0))
+        c_text = cand.get("text", "").strip()
+
+        # Reject pure statutory labels as value candidates
+        if is_statutory_label_block(c_text):
+            continue
+
+        # If a custom value validator is provided, test it
+        if value_validator is not None and not value_validator(cand, c_text):
+            continue
+
+        # Check Horizontal Neighbor (to the right):
+        # Generous vertical tolerance (up to 45px or half-height overlap) to accommodate baseline shifts
+        is_right = (
+            (c_x >= a_x + a_w * 0.3) and
+            (c_x - (a_x + a_w) <= max_horizontal_px) and
+            (abs(c_y - a_y) <= 45.0 or abs((c_y + c_h / 2.0) - (a_y + a_h / 2.0)) <= 35.0)
+        )
+
+        # Check Vertical Neighbor (directly below):
+        is_below = (
+            (c_y >= a_y + a_h * 0.4) and
+            (c_y - (a_y + a_h) <= max_vertical_px) and
+            (abs(c_x - a_x) <= max_horizontal_px * 0.6)
+        )
+
+        if is_right:
+            dx = max(0.0, c_x - (a_x + a_w))
+            dy = abs(c_y - a_y)
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < min_dist:
+                min_dist = dist
+                best_cand = cand
+        elif is_below:
+            dx = abs(c_x - a_x)
+            dy = max(0.0, c_y - (a_y + a_h))
+            dist = math.sqrt(dx * dx + dy * dy) + (60.0 if prefer_horizontal else 0.0)
+            if dist < min_dist:
+                min_dist = dist
+                best_cand = cand
+
+    return best_cand
 
 def _make_multiline_field_dict(blocks_list: List[Dict[str, Any]], raw_text: str, extra_props: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -92,9 +235,10 @@ class FieldClassifier:
             'RECIPE', 'INSTRUCTION', 'INSTRUCTIONS', 'METHOD', 'DIRECTIONS', 'PREPARATION',
             'PREPARE', 'COOKING', 'SERVING', 'SUGGESTION', 'INGREDIENTS', 'HOW TO', 'TAKE',
             'BOIL', 'CRUSH', 'HEAT', 'ADD', 'MIX', 'SERVE', 'STEP', 'STEP1', 'STEP2', 'NUTRITION',
-            'FACTS', 'PER100G', 'ENERGY', 'PROTEIN', 'CARBOHYDRATE', 'FAT'
+            'FACTS', 'PER100G', 'ENERGY', 'PROTEIN', 'CARBOHYDRATE', 'FAT', 'SUGGESTED',
+            'TOPPING', 'TOPPINGS', 'DISH', 'DISHES', 'RECIPES', 'SPREADING', 'SCAN FOR RECIPES'
         }
-        self.step_pattern = re.compile(r'(\(\d+\)|\bSTEP\s*\d+\b|\b\d+\)\s*[A-Z])', re.IGNORECASE)
+        self.step_pattern = re.compile(r'(?:^\s*\(\d+\)\s+[A-Za-z]|\bSTEP\s*\d+\b|^\s*\d+\)\s*[A-Za-z])', re.IGNORECASE)
 
         # Regex Patterns for Core Fields
         self.mrp_strict_pattern = re.compile(
@@ -137,7 +281,7 @@ class FieldClassifier:
             re.IGNORECASE
         )
         self.full_date_pattern = re.compile(
-            r'(?:^|[^A-Za-z0-9])([0-3]?[0-9])[\.\s/|-]+(0[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)[\.\s/|-]*(20[1-3][0-9]|[1-3][0-9])\b',
+            r'(?:^|[^A-Za-z0-9])([0-3]?[0-9])[\.\s/|-]+(0?[1-9]|1[0-2]|0CT|OCT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|NOV|DEC)[\.\s/|-]*(20[1-3][0-9]|[1-3][0-9])\b',
             re.IGNORECASE
         )
         # Bug 4: Additional real-world Indian packaging date patterns
@@ -193,17 +337,20 @@ class FieldClassifier:
             'BATCH', 'LOT', 'B.NO', 'MFD', 'EXP', 'USEBY', 'USE BY', 'PKD', 'PACKED',
             'INGREDIENTS', 'NUTRITION', 'NUTRITIONAL', 'INFORMATION', 'PORTION',
             'KNOW', 'YOUR', 'ADVICE', 'STORAGE', 'WARNING', 'CAUTION', 'ACCEPT',
-            'DAMAGED', 'SACHET', 'SEAL', 'LETS TALK', 'LETSTALK', 'FEEDBACK'
+            'DAMAGED', 'SACHET', 'SEAL', 'LETS TALK', 'LETSTALK', 'FEEDBACK',
+            'SUGGESTED', 'SUGGESTION', 'SERVING', 'HOW TO', 'METHOD', 'DIRECTIONS',
+            'FOR RECIPES', 'RECIPES', 'TOPPING', 'TOPPINGS', 'DIP', 'MIXING', 'SPREADING'
         }
 
         self.known_commodity_keywords = {
-            'MASALA', 'SPICE', 'SAUCE', 'KETCHUP', 'POWDER', 'OIL', 'TEA', 'COFFEE',
+            'MASALA', 'SPICE', 'SAUCE', 'KETCHUP', 'CHUTNEY', 'POWDER', 'OIL', 'TEA', 'COFFEE',
             'SOAP', 'CREAM', 'PASTE', 'SHAMPOO', 'NOODLES', 'CHIPS', 'BISCUIT',
             'DRINK', 'WATER', 'JUICE', 'ANTACID', 'SACHET', 'TABLET', 'CAPSULE',
             'FOOD', 'SALT', 'MILK', 'BUTTER', 'CHEESE', 'FLOUR', 'ATTA',
             'RICE', 'DAL', 'PULSE', 'PICKLE', 'JAM', 'SYRUP', 'MIX', 'PASTA',
-            'PANEER', 'TIKKA', 'MIXED', 'MASALA MIX', 'SPICE MIX',
-            'SHRI', 'HARI', 'SUHANA', 'ENO', 'WAFER', 'CHOCOLATE', 'CONFECTIONERY'
+            'PANEER', 'TIKKA', 'MIXED', 'MASALA MIX', 'SPICE MIX', 'SPREAD', 'DIP',
+            'SHRI', 'HARI', 'SUHANA', 'ENO', 'WAFER', 'CHOCOLATE', 'CONFECTIONERY',
+            'NAMKEEN', 'SNACK', 'SNACKS', 'PUREE', 'GRAVY', 'VINEGAR'
         }
 
         self.mfg_keywords = [
@@ -271,7 +418,7 @@ class FieldClassifier:
             return None
 
         # --- Pattern 0: Standard / Fused DD/MM/YY or DD/MM/YYYY numeric date ---
-        fused = re.findall(r'\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/([12][0-9]{3}|[1-3][0-9])\b', text)
+        fused = re.findall(r'\b(0?[1-9]|[12][0-9]|3[01])[\.\s/|-]+(0?[1-9]|1[0-2])[\.\s/|-]+([12][0-9]{3}|[1-3][0-9])\b', text)
         if fused:
             d_str, m_str, y_str = fused[0]
             y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
@@ -386,6 +533,60 @@ class FieldClassifier:
 
         return None
 
+    def _to_comparable_date(self, s: str) -> Optional[Tuple[int, int, int]]:
+        """
+        Parses an extracted date string into a comparable (year, month, day) tuple.
+        Returns None if date cannot be parsed into year/month.
+        """
+        if not s:
+            return None
+        month_map = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+            '0CT': 10
+        }
+        # Check DD/MON/YYYY or DD-MON-YYYY
+        m1 = re.search(r'\b(\d{1,2})[/\-.]([A-Za-z0]{3})[/\-.](\d{4})\b', s)
+        if m1:
+            d = int(m1.group(1))
+            m_name = m1.group(2).upper()
+            y = int(m1.group(3))
+            m = month_map.get(m_name, 1)
+            return (y, m, d)
+
+        # Check MON/YYYY or MON-YYYY
+        m2 = re.search(r'\b([A-Za-z0]{3})[/\-.](\d{4})\b', s)
+        if m2:
+            m_name = m2.group(1).upper()
+            y = int(m2.group(2))
+            m = month_map.get(m_name, 1)
+            return (y, m, 1)
+
+        # Check DD/MM/YYYY
+        m3 = re.search(r'\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})\b', s)
+        if m3:
+            d = int(m3.group(1))
+            m = int(m3.group(2))
+            y = int(m3.group(3))
+            return (y, m, d)
+
+        # Check YYYY/MM/DD
+        m4 = re.search(r'\b(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})\b', s)
+        if m4:
+            y = int(m4.group(1))
+            m = int(m4.group(2))
+            d = int(m4.group(3))
+            return (y, m, d)
+
+        # Check MM/YYYY
+        m5 = re.search(r'\b(\d{1,2})[/\-.](\d{4})\b', s)
+        if m5:
+            m = int(m5.group(1))
+            y = int(m5.group(2))
+            return (y, m, 1)
+
+        return None
+
     def _parse_net_quantity(self, text: str) -> Optional[Tuple[float, str, bool]]:
         """
         Parses Net Quantity with strict physical plausibility range check (1g/1ml to 25kg/25L).
@@ -455,6 +656,155 @@ class FieldClassifier:
         is_standard = norm_unit in ['g', 'kg', 'ml', 'L', 'N']
         return (num_val, norm_unit, is_standard)
 
+    def disambiguate_coder_strip(self, text: str) -> Dict[str, Any]:
+        """
+        Decomposes complex inkjet / dot-matrix coder strips (e.g. 'BNO.02 01-05-26 50g35/-',
+        'F29G1 29/07/26 28-07/27', 'C25J05E 0CT.2025 SEP.2026 23.00') into cleanly isolated
+        batch_number, mfg_date, expiry_date, net_quantity, and mrp.
+        """
+        res: Dict[str, Any] = {
+            "batch_number": None,
+            "mfg_date": None,
+            "expiry_date": None,
+            "net_quantity": None,
+            "mrp": None
+        }
+        if not text:
+            return res
+
+        upper = text.upper()
+        norm_text = re.sub(r'\b0CT\b', 'OCT', upper)
+
+        # 1. Batch Number
+        batch_m = re.search(r'\b(?:BATCH(?:\s*(?:NO\.?|NUMBER))?|LOT(?:\s*NO\.?)?|B\.?\s*NO\.?|BNO|CH\.?\s*NO\.?|B\. NO)[\s:.-]*([A-Za-z0-9/-]+)\b', norm_text)
+        if batch_m:
+            b_val = batch_m.group(1).strip()
+            if b_val not in ["NO", "NUMBER", "NUM", "DATE", "DT", "USE", "PKD", "EXP"]:
+                res["batch_number"] = b_val
+        else:
+            lead_m = re.search(r'^\s*([A-Z0-9]{3,9})\b', norm_text)
+            if lead_m:
+                cand = lead_m.group(1)
+                if any(c.isdigit() for c in cand) and any(c.isalpha() for c in cand) and not any(m in cand for m in self.month_names):
+                    if cand not in ["BEST", "BEFORE", "USEBY", "DATE", "PRICE", "INDIA", "FSSAI"]:
+                        res["batch_number"] = cand
+
+        # 2. Date Extraction (Mfg / Expiry)
+        date_candidates: List[CoderDateCandidate] = []
+        for dm in re.finditer(r'\b([0-3]?[0-9])[\.\s/|-]+(0?[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[\.\s/|-]+(20[1-3][0-9]|[1-3][0-9])\b', norm_text):
+            d_str, m_str, y_str = dm.groups()
+            y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+            if 2015 <= y <= 2035:
+                if m_str.isdigit():
+                    month_abbrs = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+                    m_norm = month_abbrs[int(m_str) - 1]
+                else:
+                    m_norm = m_str.upper()
+                d_int = int(d_str)
+                if 1 <= d_int <= 31:
+                    date_candidates.append({
+                        "formatted": f"{d_int:02d}/{m_norm}/{y}",
+                        "year": y,
+                        "raw": dm.group(0),
+                        "start": dm.start(),
+                        "end": dm.end()
+                    })
+
+        for mm in re.finditer(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[\s./-]*(20[1-3][0-9]|[1-3][0-9])\b', norm_text):
+            m_start = mm.start()
+            if not any(dc["start"] <= m_start < dc["end"] for dc in date_candidates):
+                m_str, y_str = mm.groups()
+                y = int(y_str) if len(y_str) == 4 else 2000 + int(y_str)
+                if 2015 <= y <= 2035:
+                    date_candidates.append({
+                        "formatted": f"{m_str.upper()}/{y}",
+                        "year": y,
+                        "raw": mm.group(0),
+                        "start": mm.start(),
+                        "end": mm.end()
+                    })
+
+        for nmy in re.finditer(r'\b(0?[1-9]|1[0-2])/(20[1-3][0-9])\b', norm_text):
+            n_start = nmy.start()
+            if not any(dc["start"] <= n_start < dc["end"] for dc in date_candidates):
+                m_str, y_str = nmy.groups()
+                y = int(y_str)
+                if 2015 <= y <= 2035:
+                    month_abbrs = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC']
+                    m_norm = month_abbrs[int(m_str) - 1]
+                    date_candidates.append({
+                        "formatted": f"{m_norm}/{y}",
+                        "year": y,
+                        "raw": nmy.group(0),
+                        "start": nmy.start(),
+                        "end": nmy.end()
+                    })
+
+        if len(date_candidates) >= 2:
+            res["mfg_date"] = date_candidates[0]["formatted"]
+            res["expiry_date"] = date_candidates[1]["formatted"]
+        elif len(date_candidates) == 1:
+            d_val = date_candidates[0]["formatted"]
+            first_start = date_candidates[0]["start"]
+            first_end = date_candidates[0]["end"]
+            pre_ctx = norm_text[:first_start]
+            post_ctx = norm_text[first_end:]
+            if any(k in pre_ctx for k in ["EXP", "USE BY", "BEST BEFORE", "BB"]) or any(k in post_ctx for k in ["EXP", "USE BY"]):
+                res["expiry_date"] = d_val
+            else:
+                res["mfg_date"] = d_val
+
+        if not res["expiry_date"] and "BEST BEFORE" in norm_text:
+            bb_m = re.search(r'BEST\s*BEFORE\s*(\d{1,2}\s*(?:MONTHS?|DAYS?|WEEKS?|YEARS?)(?:\s+FROM\s+[A-Z\s]+)?)', norm_text)
+            if bb_m:
+                res["expiry_date"] = bb_m.group(0).strip()
+            elif "12 MONTHS" in norm_text:
+                res["expiry_date"] = "12 MONTHS FROM PACKAGING"
+
+        # 3. Net Quantity from strip
+        qty_strip_m = re.search(r'(?:^|[^\w.])(\d+(?:\.\d+)?)\s*(g|kg|gm|gms|ml|l|ltr|n|units|pcs)\b', norm_text, re.IGNORECASE)
+        if qty_strip_m:
+            q_val = float(qty_strip_m.group(1))
+            q_unit = qty_strip_m.group(2).lower()
+            if q_unit in ['gm', 'gms']: q_unit = 'g'
+            elif q_unit in ['ltr', 'l']: q_unit = 'L'
+            equiv_g = q_val * 1000.0 if q_unit in ['kg', 'L'] else q_val
+            if 1.0 <= equiv_g <= 25000.0:
+                res["net_quantity"] = {
+                    "raw_text": qty_strip_m.group(0).strip(),
+                    "numeric_value": int(q_val) if q_val == int(q_val) else q_val,
+                    "unit": q_unit,
+                    "formatted_value": f"{int(q_val) if q_val == int(q_val) else q_val} {q_unit}",
+                    "is_standard_unit": q_unit in ['g', 'kg', 'ml', 'L', 'N']
+                }
+
+        # 4. MRP from strip
+        date_raw_spans: List[Tuple[int, int]] = [(dc["start"], dc["end"]) for dc in date_candidates]
+        mrp_candidates = []
+        for pm in re.finditer(r'(?:(?:RS\.?|₹|F)\s*)?(\d{1,4}(?:\.\d{2})?)\s*(?:/-)', norm_text):
+            p_val = float(pm.group(1))
+            if 1.0 <= p_val <= 20000.0:
+                mrp_candidates.append(p_val)
+
+        for pm in re.finditer(r'(?:(?:RS\.?|₹|F)\s*)?(\d{2,4}\.\d{2})\b', norm_text):
+            pm_start = pm.start()
+            if not any(s <= pm_start < e for (s, e) in date_raw_spans):
+                p_val = float(pm.group(1))
+                if 1.0 <= p_val <= 20000.0 and p_val not in mrp_candidates:
+                    mrp_candidates.append(p_val)
+
+        if mrp_candidates:
+            chosen_price = mrp_candidates[0]
+            fmt_p = f"{chosen_price:g}" if chosen_price == int(chosen_price) else f"{chosen_price:.2f}"
+            res["mrp"] = {
+                "raw_text": f"₹ {fmt_p}",
+                "value": chosen_price,
+                "formatted_value": f"₹ {fmt_p}",
+                "currency": "₹"
+            }
+
+        return res
+
     def classify_blocks(self, blocks: List[Dict[str, Any]], image_bytes: Optional[bytes] = None) -> Dict[str, Any]:
         """
         Classifies OCR blocks into structured fields with multimodal LLM & local contextual NLP fallback.
@@ -471,6 +821,8 @@ class FieldClassifier:
             "consumer_care": None,
             "fssai_number": None,
             "commodity_name": None,
+            "ingredients": None,
+            "batch_number": None,
             "unclassified_blocks_count": 0
         }
 
@@ -497,12 +849,129 @@ class FieldClassifier:
             tax_targets = ["inclusive of all taxes", "inclusive all taxes", "incl all taxes", "all taxes inclusive"]
             has_global_tax_clause = fuzzy_match_any(tax_str_flat, tax_targets, min_score=75.0)
 
+        # --- Pass 0: Dot-Matrix / Inkjet Variable Coder Strip Disambiguation ---
+        # Stamped coder lines often combine Batch No, Mfg Date, Expiry Date, Net Qty, and Price into one block.
+        # Disambiguates and routes each entity to its proper field, preventing raw-dump contamination.
+        for block in valid_blocks:
+            b_id = block.get("id")
+            if b_id is None or b_id in recipe_block_ids:
+                continue
+            text = block.get("text", "").strip()
+            coder_res = self.disambiguate_coder_strip(text)
+
+            has_date = bool(coder_res.get("mfg_date") or coder_res.get("expiry_date"))
+            has_price = bool(coder_res.get("mrp"))
+            has_batch = bool(coder_res.get("batch_number"))
+            has_strip_qty = bool(coder_res.get("net_quantity"))
+
+            if has_date or (has_batch and has_price):
+                if has_batch and not classified.get("batch_number"):
+                    classified["batch_number"] = coder_res["batch_number"]
+
+                if coder_res.get("mfg_date") and not classified.get("mfg_date"):
+                    classified["mfg_date"] = {
+                        "raw_text": f"Mfg: {coder_res['mfg_date']}",
+                        "extracted_date": coder_res["mfg_date"],
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_block_ids.add(b_id)
+
+                if coder_res.get("expiry_date") and not classified.get("expiry_date"):
+                    classified["expiry_date"] = {
+                        "raw_text": f"Exp: {coder_res['expiry_date']}",
+                        "extracted_date": coder_res["expiry_date"],
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_block_ids.add(b_id)
+
+                if has_strip_qty and not classified.get("net_quantity"):
+                    q_info = coder_res["net_quantity"]
+                    classified["net_quantity"] = {
+                        "raw_text": q_info["raw_text"],
+                        "numeric_value": q_info["numeric_value"],
+                        "unit": q_info["unit"],
+                        "formatted_value": q_info["formatted_value"],
+                        "is_standard_unit": q_info["is_standard_unit"],
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_block_ids.add(b_id)
+
+                if has_price and not classified.get("mrp"):
+                    p_info = coder_res["mrp"]
+                    classified["mrp"] = {
+                        "raw_text": p_info["raw_text"],
+                        "value": p_info["value"],
+                        "formatted_value": p_info["formatted_value"],
+                        "currency": p_info["currency"],
+                        "has_tax_clause": has_global_tax_clause,
+                        "confidence": 0.95,
+                        "bbox": block.get("bbox"),
+                        "rect": block.get("rect"),
+                        "font_height_px": float(block.get("rect", {}).get("height", 0.0)),
+                        "matched_blocks": [block]
+                    }
+                    claimed_block_ids.add(b_id)
+
+        # Explicit Batch / Lot headers across separate 2-column blocks
+        if not classified.get("batch_number"):
+            for block in valid_blocks:
+                b_id = block.get("id")
+                if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
+                    continue
+                text = block.get("text", "").strip()
+                upper = text.upper()
+                if re.search(r'\b(?:BATCH\s*(?:NO\.?|NUMBER)?|LOT\s*(?:NO\.?)?|B\.?\s*NO\.?)\b', upper):
+                    cleaned_b = re.sub(r'^(?:BATCH\s*(?:NO\.?|NUMBER)?|LOT\s*(?:NO\.?)?|B\.?\s*NO\.?)\s*[:\-–—.]*\s*', '', text, flags=re.I).strip()
+                    if cleaned_b and len(cleaned_b) >= 3 and not any(k in cleaned_b.upper() for k in ['USE', 'EXP', 'MFG', 'DATE', 'PRICE', 'OTHER', 'RECYCLE', 'PLASTIC', 'PACKAGING']):
+                        classified["batch_number"] = {
+                            "raw_text": cleaned_b,
+                            "confidence": 0.90,
+                            "rect": block.get("rect"),
+                            "matched_blocks": [block]
+                        }
+                        claimed_block_ids.add(b_id)
+                        break
+                    else:
+                        adj = find_adjacent_value_block(
+                            block,
+                            valid_blocks,
+                            max_horizontal_px=380.0,
+                            max_vertical_px=80.0,
+                            excluded_ids=claimed_block_ids | recipe_block_ids,
+                            value_validator=lambda cand, t: bool(re.search(r'[A-Za-z0-9]', t)) and len(t.strip()) >= 3 and not any(lbl in t.upper() for lbl in ['INCL', 'TAXES', 'MRP', 'MFG', 'EXP', 'DATE', 'PACKAGING', 'OTHER', 'RECYCLE', 'PLASTIC'])
+                        )
+                        if adj:
+                            adj_t = adj.get("text", "").strip()
+                            classified["batch_number"] = {
+                                "raw_text": adj_t,
+                                "confidence": 0.90,
+                                "rect": adj.get("rect"),
+                                "matched_blocks": [block, adj]
+                            }
+                            claimed_block_ids.add(b_id)
+                            adj_id = adj.get("id")
+                            if adj_id is not None:
+                                claimed_block_ids.add(adj_id)
+                            break
+
         # --- Pass 1: FSSAI License Number ---
         for block in valid_blocks:
             b_id = block.get("id")
             if b_id is None or b_id in claimed_block_ids:
                 continue
-            text = block.get("text", "").strip()
+            text = normalize_ocr_character_confusions(block.get("text", "").strip())
 
             fssai_m = self.fssai_strict_pattern.search(text)
             if fssai_m:
@@ -535,29 +1004,63 @@ class FieldClassifier:
                     if b_id is not None:
                         claimed_block_ids.add(b_id)
                     break
+                else:
+                    # Spatial Neighbor Search: Block has 'LIC' / 'FSSAI' keyword, but 14 digits are in adjacent block
+                    adj = find_adjacent_value_block(block, valid_blocks, max_horizontal_px=250.0, max_vertical_px=100.0, excluded_ids=claimed_block_ids)
+                    if adj:
+                        adj_text = normalize_ocr_character_confusions(adj.get("text", "").strip())
+                        adj_digits = re.findall(r'\b(1\d{12,13}|2\d{12,13})\b', adj_text)
+                        if adj_digits:
+                            combined_text = f"{text} {adj_text}"
+                            classified["fssai_number"] = _make_multiline_field_dict(
+                                [block, adj],
+                                combined_text,
+                                {
+                                    "license_number": adj_digits[0],
+                                    "is_valid_14_digit": len(adj_digits[0]) == 14,
+                                    "confidence": min(block.get("confidence", 0.9), adj.get("confidence", 0.9))
+                                }
+                            )
+                            if b_id is not None:
+                                claimed_block_ids.add(b_id)
+                            adj_id = adj.get("id")
+                            if adj_id is not None:
+                                claimed_block_ids.add(adj_id)
+                            break
 
         # --- Pass 2: Whole Packet Net Quantity (Scoring Engine for Packet Weight vs Ingredients) ---
-        # Bug 2: Build Y-range exclusion zones from known nutrition/ingredient table blocks.
-        # If a candidate's bounding box overlaps or is adjacent (within 50px) to a nutrition block,
-        # it is likely a per-serving or per-100g value, not the actual packet net quantity.
-        nutrition_y_zones = []  # list of (y_min, y_max) tuples
+        # Build comprehensive exclusion bounding box for nutrition/serving/ingredient tables
+        nutrition_table_boxes: List[Tuple[float, float, float, float]] = []
+        nutrition_member_y: List[float] = []
+
+        nutrient_kw = [
+            'SERVING SIZE', 'PER 100', 'PER SERVE', 'NUTRITION FACTS', 'NUTRITIONAL',
+            'DAILY VALUE', '% RDA', 'CARBOHYDRATE', 'SUGAR', 'ADDED SUGAR', 'PROTEIN',
+            'TOTAL FAT', 'FAT', 'SODIUM', 'CHOLESTEROL', 'ENERGY', 'KCAL', 'DIETARY FIBER'
+        ]
+
+        nutr_blocks = []
         for block in valid_blocks:
             bt = block.get("text", "").strip().upper()
             rect = block.get("rect", {})
             if rect.get("height", 0) > 0:
-                if self._is_recipe_instruction_block(block.get("text", "")) or any(
-                    kw in bt for kw in ['SERVING SIZE', 'PER 100', 'NUTRITION FACTS', 'NUTRITIONAL', 'DAILY VALUE', '% RDA']
-                ):
-                    y0 = rect.get("y", 0) - 50
-                    y1 = rect.get("y", 0) + rect.get("height", 0) + 50
-                    nutrition_y_zones.append((y0, y1))
+                if self._is_recipe_instruction_block(block.get("text", "")) or any(kw in bt for kw in nutrient_kw):
+                    nutr_blocks.append(block)
+                    nutrition_member_y.append(rect.get("y", 0.0) + rect.get("height", 0.0) / 2.0)
+
+        if len(nutr_blocks) >= 2:
+            min_nx = min(b.get("rect", {}).get("x", 0.0) for b in nutr_blocks) - 20.0
+            max_nx = max(b.get("rect", {}).get("x", 0.0) + b.get("rect", {}).get("width", 0.0) for b in nutr_blocks) + 180.0
+            min_ny = min(b.get("rect", {}).get("y", 0.0) for b in nutr_blocks) - 25.0
+            max_ny = max(b.get("rect", {}).get("y", 0.0) + b.get("rect", {}).get("height", 0.0) for b in nutr_blocks) + 30.0
+            nutrition_table_boxes.append((min_nx, min_ny, max_nx, max_ny))
 
         net_qty_candidates = []
         for block in valid_blocks:
             b_id = block.get("id")
             if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
-            text = block.get("text", "").strip()
+            text = normalize_ocr_character_confusions(block.get("text", "").strip())
             upper_text = text.upper()
 
             # Hard exclusions: Skip ingredient breakdowns, nutrition facts, recipe steps, and batch/date stamps
@@ -568,21 +1071,52 @@ class FieldClassifier:
             if re.search(r'\b(STEP\s*\d+|\d+\)\s*[A-Z]|TSP|TBSP|CUP)\b', upper_text):
                 continue
 
-            # Bug 2: Spatial nutrition-zone exclusion — skip blocks that sit inside a nutrition table
+            # Spatial nutrition-zone exclusion — skip blocks that sit inside a nutrition table
             block_rect = block.get("rect", {})
-            block_y_center = block_rect.get("y", 0) + block_rect.get("height", 0) / 2.0
-            in_nutrition_zone = any(y0 <= block_y_center <= y1 for (y0, y1) in nutrition_y_zones)
-            if in_nutrition_zone:
+            bx_center = block_rect.get("x", 0.0) + block_rect.get("width", 0.0) / 2.0
+            by_center = block_rect.get("y", 0.0) + block_rect.get("height", 0.0) / 2.0
+            in_nutrition_box = any(
+                (nx0 <= bx_center <= nx1 and ny0 <= by_center <= ny1)
+                for (nx0, ny0, nx1, ny1) in nutrition_table_boxes
+            )
+            near_nutrient_row = any(
+                abs(by_center - my) <= 25.0 and (nutrition_table_boxes and bx_center <= nutrition_table_boxes[0][2])
+                for my in nutrition_member_y
+            )
+            if in_nutrition_box or near_nutrient_row:
                 logger.info(f"Net qty spatial exclusion: block '{text[:30]}' is inside a nutrition table zone")
                 continue
 
             parsed_qty = self._parse_net_quantity(text)
+            adj_for_qty: Optional[Dict[str, Any]] = None
+            has_explicit_prefix = bool(self.net_qty_prefix_pattern.search(text))
+
+            if not parsed_qty and (has_explicit_prefix or any(kw in upper_text for kw in ['NET WT', 'NET WEIGHT', 'NET QTY', 'NET QUANTITY', 'NET VOL', 'N.W.'])):
+                # Spatial Neighbor Search: Block has Net Qty label, find adjacent value block
+                adj = find_adjacent_value_block(
+                    block,
+                    valid_blocks,
+                    max_horizontal_px=350.0,
+                    max_vertical_px=90.0,
+                    excluded_ids=claimed_block_ids | recipe_block_ids,
+                    value_validator=lambda cand, txt: bool(self._parse_net_quantity(normalize_ocr_character_confusions(txt)))
+                )
+                if adj:
+                    adj_text = normalize_ocr_character_confusions(adj.get("text", "").strip())
+                    adj_qty = self._parse_net_quantity(adj_text)
+                    if adj_qty:
+                        parsed_qty = adj_qty
+                        adj_for_qty = adj
+                        has_explicit_prefix = True
+
             if parsed_qty:
                 num_val, unit_str, is_standard = parsed_qty
 
                 # Candidate Scoring System
-                score = block.get("confidence", 0.5) * 10.0
-                has_explicit_prefix = bool(self.net_qty_prefix_pattern.search(text))
+                base_conf = block.get("confidence", 0.5)
+                if adj_for_qty:
+                    base_conf = min(base_conf, adj_for_qty.get("confidence", 0.5))
+                score = base_conf * 10.0
 
                 if has_explicit_prefix:
                     score += 50.0
@@ -598,11 +1132,11 @@ class FieldClassifier:
                 if len(text) < 30:
                     score += 10.0
 
-                net_qty_candidates.append((score, block, num_val, unit_str, is_standard, has_explicit_prefix))
+                net_qty_candidates.append((score, block, num_val, unit_str, is_standard, has_explicit_prefix, adj_for_qty))
 
         if net_qty_candidates:
             net_qty_candidates.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_block, num_val, unit_str, is_standard, has_prefix = net_qty_candidates[0]
+            best_score, best_block, num_val, unit_str, is_standard, has_prefix, best_adj = net_qty_candidates[0]
 
             # Bug 2: Ambiguity detection — if top 2 candidates both lack explicit prefix and
             # scores are within 5 points, it's genuinely ambiguous; return LOW_CONFIDENCE.
@@ -616,28 +1150,50 @@ class FieldClassifier:
             b_id = best_block["id"]
             text = best_block["text"].strip()
             field_conf = best_block["confidence"] if has_prefix else min(best_block["confidence"], 0.75)
+            if best_adj:
+                field_conf = min(field_conf, best_adj.get("confidence", 0.75))
 
             num_display = int(num_val) if num_val == int(num_val) else num_val
-            classified["net_quantity"] = {
-                "raw_text": text,
-                "numeric_value": num_val,
-                "unit": unit_str,
-                "formatted_value": f"{num_display} {unit_str}",
-                "is_standard_unit": is_standard,
-                "confidence": field_conf,
-                "bbox": best_block.get("bbox"),
-                "rect": best_block.get("rect"),
-                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
-                "matched_blocks": [best_block]
-            }
-            claimed_block_ids.add(b_id)
+            if best_adj:
+                combined_t = f"{text} {best_adj.get('text', '').strip()}"
+                classified["net_quantity"] = _make_multiline_field_dict(
+                    [best_block, best_adj],
+                    combined_t,
+                    {
+                        "numeric_value": num_val,
+                        "unit": unit_str,
+                        "formatted_value": f"{num_display} {unit_str}",
+                        "is_standard_unit": is_standard,
+                        "confidence": field_conf
+                    }
+                )
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
+                adj_id = best_adj.get("id")
+                if adj_id is not None:
+                    claimed_block_ids.add(adj_id)
+            else:
+                classified["net_quantity"] = {
+                    "raw_text": text,
+                    "numeric_value": num_val,
+                    "unit": unit_str,
+                    "formatted_value": f"{num_display} {unit_str}",
+                    "is_standard_unit": is_standard,
+                    "confidence": field_conf,
+                    "bbox": best_block.get("bbox"),
+                    "rect": best_block.get("rect"),
+                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [best_block]
+                }
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
 
         # --- Pass 3: MRP & Manufacturing / Expiry Date ---
         for block in valid_blocks:
             b_id = block.get("id")
             if b_id is None or b_id in claimed_block_ids or b_id in recipe_block_ids:
                 continue
-            text = block.get("text", "").strip()
+            text = normalize_ocr_character_confusions(block.get("text", "").strip())
             upper_text = text.upper()
             claimed_this_block = False
 
@@ -692,6 +1248,59 @@ class FieldClassifier:
                             "matched_blocks": [block]
                         }
                         claimed_this_block = True
+                elif any(kw in upper_text for kw in ['MRP', 'M.R.P', 'MAX RETAIL PRICE', 'MAXIMUM RETAIL PRICE']):
+                    # Spatial Neighbor Search: Block has MRP label (e.g. 'MRP:'), find adjacent price block
+                    def mrp_cand_validator(cand: Dict[str, Any], t: str) -> bool:
+                        cr = cand.get("rect", {})
+                        cx = cr.get("x", 0.0) + cr.get("width", 0.0) / 2.0
+                        cy = cr.get("y", 0.0) + cr.get("height", 0.0) / 2.0
+                        if any(nx0 <= cx <= nx1 and ny0 <= cy <= ny1 for (nx0, ny0, nx1, ny1) in nutrition_table_boxes):
+                            return False
+                        if not re.search(r'\d', t):
+                            return False
+                        if re.search(r'\b\d{2}[/-]\d{2}[/-]\d{2,4}\b', t):
+                            return False
+                        if any(lbl in re.sub(r'[^A-Z]', '', t.upper()) for lbl in ['INCL', 'TAXES', 'MRP', 'BATCH', 'MFG', 'EXP', 'USEBY', 'DATEOF']):
+                            return False
+                        prices = [float(x) for x in re.findall(r'\d+(?:\.\d{1,2})?', t)]
+                        return any(1.0 <= p <= 50000.0 for p in prices)
+
+                    adj = find_adjacent_value_block(
+                        block,
+                        valid_blocks,
+                        max_horizontal_px=380.0,
+                        max_vertical_px=100.0,
+                        excluded_ids=claimed_block_ids | recipe_block_ids,
+                        value_validator=mrp_cand_validator
+                    )
+                    if adj:
+                        adj_text = normalize_ocr_character_confusions(adj.get("text", "").strip())
+                        adj_m = re.search(r'(?:(?:MRP|RS\.?|₹|\$)\s*[:=.\s]*)?(\d{1,5}(?:\.\d{1,2})?)\s*(?:\([^)]*\))?', adj_text, re.IGNORECASE)
+                        adj_prices = [float(adj_m.group(1))] if adj_m and 1.0 <= float(adj_m.group(1)) <= 50000.0 else []
+                        if not adj_prices:
+                            adj_prices = [float(x) for x in re.findall(r'\d+(?:\.\d{1,2})?', adj_text) if 1.0 <= float(x) <= 50000.0]
+                        if adj_prices:
+                            price_num = adj_prices[0]
+                            formatted_price = f"{price_num:g}" if price_num == int(price_num) else f"{price_num:.2f}"
+                            currency_sym = "₹" if ("₹" in text or "₹" in adj_text) else "Rs."
+                            has_taxes = has_global_tax_clause or bool(self.tax_clause_pattern.search(text)) or bool(self.tax_clause_pattern.search(adj_text))
+                            combined_text = f"{text} {adj_text}"
+                            classified["mrp"] = _make_multiline_field_dict(
+                                [block, adj],
+                                combined_text,
+                                {
+                                    "value": price_num,
+                                    "formatted_value": f"{currency_sym} {formatted_price}",
+                                    "currency": currency_sym,
+                                    "has_tax_clause": has_taxes,
+                                    "rupee_symbol_only": False,
+                                    "confidence": min(block.get("confidence", 0.9), adj.get("confidence", 0.9))
+                                }
+                            )
+                            claimed_this_block = True
+                            adj_id = adj.get("id")
+                            if adj_id is not None:
+                                claimed_block_ids.add(adj_id)
 
             # Date Check: Check for Mfg Date and Expiry Date
             has_mfg_kw = any(kw in upper_text for kw in ['MFG', 'PKD', 'PACKED', 'MANUFACTURED', 'PROD', 'M/D', 'DOM'])
@@ -790,6 +1399,46 @@ class FieldClassifier:
                                 "matched_blocks": [block]
                             }
                             claimed_this_block = True
+                elif has_mfg_kw and not classified["mfg_date"]:
+                    # Spatial Neighbor Search: Label 'MFG DATE:' with date in adjacent block
+                    adj = find_adjacent_value_block(block, valid_blocks, max_horizontal_px=240.0, max_vertical_px=80.0, excluded_ids=claimed_block_ids | recipe_block_ids)
+                    if adj:
+                        adj_text = normalize_ocr_character_confusions(adj.get("text", "").strip())
+                        adj_d = self._parse_and_validate_date(adj_text)
+                        if adj_d:
+                            combined_text = f"{text} {adj_text}"
+                            classified["mfg_date"] = _make_multiline_field_dict(
+                                [block, adj],
+                                combined_text,
+                                {
+                                    "extracted_date": adj_d,
+                                    "confidence": min(block.get("confidence", 0.9), adj.get("confidence", 0.9))
+                                }
+                            )
+                            claimed_this_block = True
+                            adj_id = adj.get("id")
+                            if adj_id is not None:
+                                claimed_block_ids.add(adj_id)
+                elif has_exp_kw and not classified["expiry_date"]:
+                    # Spatial Neighbor Search: Label 'EXPIRY DATE:' with date in adjacent block
+                    adj = find_adjacent_value_block(block, valid_blocks, max_horizontal_px=240.0, max_vertical_px=80.0, excluded_ids=claimed_block_ids | recipe_block_ids)
+                    if adj:
+                        adj_text = normalize_ocr_character_confusions(adj.get("text", "").strip())
+                        adj_d = self._parse_and_validate_date(adj_text)
+                        if adj_d:
+                            combined_text = f"{text} {adj_text}"
+                            classified["expiry_date"] = _make_multiline_field_dict(
+                                [block, adj],
+                                combined_text,
+                                {
+                                    "extracted_date": adj_d,
+                                    "confidence": min(block.get("confidence", 0.9), adj.get("confidence", 0.9))
+                                }
+                            )
+                            claimed_this_block = True
+                            adj_id = adj.get("id")
+                            if adj_id is not None:
+                                claimed_block_ids.add(adj_id)
 
             # Shelf-life Best Before declaration (Rule 6(1)(d))
             if not classified["expiry_date"] and 'BEST BEFORE' in upper_text:
@@ -848,6 +1497,18 @@ class FieldClassifier:
                         "matched_blocks": [b]
                     }
                     break
+
+        # Chronological Date Inversion Safeguard:
+        # If both mfg_date and expiry_date were extracted and mfg_date is chronologically AFTER expiry_date,
+        # swap them to ensure min(dates) = mfg_date and max(dates) = expiry_date.
+        if classified.get("mfg_date") and classified.get("expiry_date"):
+            mfg_d_val = classified["mfg_date"].get("extracted_date", "")
+            exp_d_val = classified["expiry_date"].get("extracted_date", "")
+            mfg_comp = self._to_comparable_date(mfg_d_val)
+            exp_comp = self._to_comparable_date(exp_d_val)
+            if mfg_comp and exp_comp and mfg_comp > exp_comp:
+                logger.info(f"Chronological inversion detected: mfg {mfg_d_val} > exp {exp_d_val}. Swapping fields.")
+                classified["mfg_date"], classified["expiry_date"] = classified["expiry_date"], classified["mfg_date"]
 
         # --- Pass 4: Manufacturer Details (Strict Spatial Adjacency & Semantic Boundaries) ---
         mfg_anchors = ['MANUFACTURED', 'MANUFACTURER', 'PACKED BY', 'MFD BY', 'MFG BY', 'PKD BY', 'MARKETED BY', 'IMPORTER', 'REGISTERED OFFICE', 'REGD OFFICE', 'INDIA LTD', 'MASALEWALE']
@@ -942,6 +1603,19 @@ class FieldClassifier:
                     if b_id is not None:
                         claimed_block_ids.add(b_id)
 
+                # Spatial Neighbor Search: If block has care keyword but no phone/email, check adjacent block
+                if is_care_kw and not (phone_m or email_m):
+                    adj = find_adjacent_value_block(block, valid_blocks, max_horizontal_px=260.0, max_vertical_px=100.0, excluded_ids=claimed_block_ids | recipe_block_ids)
+                    if adj:
+                        adj_text = adj.get("text", "").strip()
+                        if self.phone_pattern.search(adj_text) or self.email_pattern.search(adj_text) or re.search(r'\b\d{10}\b', adj_text):
+                            if adj_text not in care_parts:
+                                care_parts.append(adj_text)
+                                care_blocks.append(adj)
+                                adj_id = adj.get("id")
+                                if adj_id is not None:
+                                    claimed_block_ids.add(adj_id)
+
         if care_parts and care_blocks:
             combined_care = " ".join(care_parts)
             classified["consumer_care"] = _make_multiline_field_dict(
@@ -964,27 +1638,68 @@ class FieldClassifier:
             text = block.get("text", "").strip()
             upper = text.upper()
 
-            # Reject packaging field headers, care terms, and instructions
-            care_or_header_kws = ['CARE', 'CUSTOMER', 'CONSUMER', 'HELPLINE', 'EMAIL', 'FEEDBACK', 'TOLLFREE', 'WECARE', 'QUANTITY', 'NETWT', 'NETQTY', 'BATCH', 'USEBY', 'EXPIRY', 'INGREDIENT', 'NUTRITION', 'PORTION', 'ADVICE']
-            if any(h in upper.replace(" ", "") for h in care_or_header_kws) or upper.endswith(':'):
+            # 1. Reject Price, MRP, taxes, financial figures
+            if re.search(r'\b(?:MRP|RS\.?|₹|\$|PRICE|MAX(?:IMUM)?\s*RETAIL|INCL(?:USIVE)?|TAXES?|UNIT\s*SALE|USP)\b', upper):
+                continue
+            if re.search(r'(?:₹|Rs\.?)\s*\d+', text) or re.search(r'\d+\s*(?:/-)', text):
                 continue
 
-            # Reject garbled text fragments
-            if re.search(r'[A-Z]{2,}II$', upper) or len(re.sub(r'[^A-Za-z]', '', text)) < 3:
+            # 2. Reject Dates, Batch, Coding stamps
+            if re.search(r'\b(?:MFG|PKD|EXP|EXPIRY|USE\s*BY|BEST\s*BEFORE|DOM|BATCH|LOT|B\.?\s*NO|BNO|CH\.?\s*NO)\b', upper):
+                continue
+            if re.search(r'\b(0?[1-9]|[12][0-9]|3[01])[/\-.](0?[1-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', upper):
                 continue
 
-            # Reject code patterns, batch numbers, dates, and warning/disclaimer notices
-            if self.code_batch_pattern.match(upper) or self.batch_keyword_pattern.search(upper):
+            # 3. Reject Net quantity measurements
+            if re.search(r'\b(?:NET\s*(?:QTY|WT|WEIGHT|QUANTITY|VOL)|N\.W\.)\b', upper):
+                continue
+            if re.search(r'^\s*\d+(?:\.\d+)?\s*(?:g|kg|gm|ml|l|ltr|pcs|units)\s*$', text, re.I):
                 continue
 
-            if any(kw in upper.replace(" ", "") for kw in ['ACCEPT', 'DAMAGED', 'SACHET', 'SEAL', 'TAMPER', 'WARNING', 'DONOTACCEPT', 'DISCLAIMER', 'STOREINA', 'COOLANDDRY']):
+            # 4. Reject Customer care, helpline, complaints
+            if re.search(r'\b(?:CARE|CUSTOMER|CONSUMER|HELPLINE|FEEDBACK|TOLL\s*FREE|COMPLAINTS?|QUERIES|EMAIL|WECARE)\b', upper):
+                continue
+            if '@' in text or re.search(r'\b1800[-\s]?\d+', text):
                 continue
 
-            # Reject address components, street names, and postal pin codes from commodity candidate
-            if re.search(r'\b(?:ROAD|STREET|AVENUE|LANE|PLOT|GAT|NAGAR|SECTOR|INDUSTRIAL|ESTATE|DIST|PIN|\d{6})\b', upper):
+            # 5. Reject Regulatory, FSSAI, Licenses, Barcode, Standards
+            if re.search(r'\b(?:FSSAI|LIC\.?\s*NO|LICENCE|LICENSE|REG\.?\s*NO|CIN|AGMARK|BARCODE|ISO\s*\d+)\b', upper):
+                continue
+            if re.search(r'\b\d{14}\b', text):
                 continue
 
-            # Reject nutrition table items, nutrient rows, and recipe measurements
+            # 6. Reject Manufacturer, Factory, Packer headers
+            if re.search(r'\b(?:MANUFACTURED|PACKED|MARKETED|IMPORTER|MFD\s*BY|MFG\s*BY|PKD\s*BY|FACTORY|WORKS\s*AT|PLOT|GIDC|REGD\.?\s*OFFICE)\b', upper):
+                continue
+
+            # 7. Reject Ingredient lists & Allergen statements
+            if re.search(r'\b(?:INGREDIENTS?|CONTAINS\s*ADDED|ARTIFICIAL|STABILIZER|EMULSIFIER|LEAVENING|ACIDITY\s*REGULATOR|ALLERGEN)\b', upper):
+                continue
+            # Multi-comma strings are ingredient lists or address blocks, NOT commodity names
+            if text.count(',') >= 2 or text.count(';') >= 1:
+                continue
+
+            # 8. Reject Packaging notices, disclaimers, storage instructions
+            if re.search(r'\b(?:ACCEPT\s*DAMAGED|DO\s*NOT\s*ACCEPT|DAMAGED|SEAL|TAMPER|DISCLAIMER|STORE\s*IN|COOL\s*AND\s*DRY|KEEP\s*IN|KEEP\s*AWAY)\b', upper):
+                continue
+            compact_upper = re.sub(r'[^A-Z]', '', upper)
+            if any(kw in compact_upper for kw in [
+                'STOREIN', 'COOLANDDRY', 'STORAGEINSTRUCTION', 'KEEPCOOL', 'KEEPINACOOL',
+                'HYGIENICPLACE', 'DONOTBUY', 'BLOATED', 'NUTRITION', 'NUTRITIONAL', 'NUTRITIONA',
+                'SERVINGSUGGESTION', 'SUGGESTEDUSE', 'HOWTOUSE', 'RECIPE', 'FORRECIPES', 'SCANFOR',
+                'CUSTOMERCARE', 'FEEDBACK', 'CONSUMERCARE', 'AFTEROPENING', 'KEEPREFRIGERATED',
+                'BESTBEFORE', 'DATEOFMFG', 'USEBY', 'BATCHNO', 'LOTNO', 'NETQUANTITY', 'NETWEIGHT'
+            ]):
+                continue
+
+            # 9. Reject Standalone single ingredient/allergen words (e.g. "milk", "salt", "sugar")
+            words_alpha = re.findall(r'[a-zA-Z]+', text)
+            if len(words_alpha) == 1 and words_alpha[0].upper() in {'MILK', 'SALT', 'SUGAR', 'WATER', 'OIL', 'WHEAT', 'FLOUR', 'SOY', 'PEANUT', 'EGG', 'MAIDA', 'BESAN'}:
+                continue
+            if len(words_alpha) < 1 or len(words_alpha) > 8:
+                continue
+
+            # Reject nutrition table items
             nutr_exclude = [
                 'TOTAL SUGAR', 'ADDED SUGAR', 'SATURATED FAT', 'TRANS FAT', 'CHOLESTEROL',
                 'SODIUM', 'CARBOHYDRATE', 'ENERGY', 'PROTEIN', 'PROVIDES APPROX', 'PER SERVE',
@@ -995,51 +1710,238 @@ class FieldClassifier:
                 continue
 
             rect = block.get("rect", {})
-
-            # Spatial nutrition-zone exclusion — skip blocks inside a nutrition table
             block_y_center = rect.get("y", 0) + rect.get("height", 0) / 2.0
-            if any(y0 <= block_y_center <= y1 for (y0, y1) in nutrition_y_zones):
+            block_x_center = rect.get("x", 0) + rect.get("width", 0) / 2.0
+            if any((nx0 <= block_x_center <= nx1 and ny0 <= block_y_center <= ny1) for (nx0, ny0, nx1, ny1) in nutrition_table_boxes):
                 continue
 
             # Explicit generic commodity prefix detection (Rule 6(1)(b))
-            has_explicit_prefix = bool(re.match(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]', text, re.IGNORECASE))
-            clean_text = re.sub(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name)\s*[:=.\s]*', '', text, flags=re.IGNORECASE).strip()
+            has_explicit_prefix = bool(re.match(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name|વસ્તુનું\s*નામ)\s*[:=.\s]', text, re.IGNORECASE))
+            clean_text = re.sub(r'^(?:Generic\s*(?:Commodity|Name)|Commodity|Product\s*Name|વસ્તુનું\s*નામ)\s*[:=.\s]*', '', text, flags=re.IGNORECASE).strip()
+            # Strip serving/suggested prefixes: e.g. "Suggested Use Of Schezwan Chutney" -> "Schezwan Chutney"
+            clean_text = re.sub(r'^(?:Suggested\s*(?:Use|Uses)?\s*(?:Of)?|Serving\s*(?:Suggestion|Suggestions)?\s*(?:Of)?|How\s*To\s*Use\s*(?:Of)?)\s*', '', clean_text, flags=re.IGNORECASE).strip()
+            # Strip any trailing declarations banners or panel headers
+            clean_text = re.sub(r'[-–—_]?\s*(?:MANDATORY\s*)?DECLARATIONS?\b.*', '', clean_text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(r'[-–—_]?\s*(?:PACKET\s*)?(?:BACK|FRONT)\s*PANEL\b.*', '', clean_text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(r'[-–—_]?\s*PACKETBACKPANEL.*', '', clean_text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(r'[-–—_]?\s*MANDATORYDECLARATIONS?.*', '', clean_text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(r'^[-–—:.,\s]+|[-–—:.,\s]+$', '', clean_text).strip()
 
-            words = re.findall(r'[a-zA-Z]+', clean_text)
-            if len(words) < 1 or len(words) > 8:
+            if clean_text.upper() in self.commodity_exclude_words or clean_text.upper() in {
+                'SUGGESTED USE', 'SUGGESTED USES', 'SERVING SUGGESTION', 'HOW TO USE', 'SCAN FOR RECIPES',
+                'RECIPES', 'STOREINACOOLDRY', 'NUTRITIONA', 'CHINESE'
+            }:
+                continue
+
+            adj_for_commodity: Optional[Dict[str, Any]] = None
+            if has_explicit_prefix and len(clean_text) < 3:
+                # Spatial Neighbor Search: Block only has 'Generic Name:' or 'Commodity:', find adjacent value block
+                adj = find_adjacent_value_block(block, valid_blocks, max_horizontal_px=280.0, max_vertical_px=80.0, excluded_ids=claimed_block_ids | recipe_block_ids)
+                if adj:
+                    adj_text = adj.get("text", "").strip()
+                    if len(adj_text) >= 3 and not any(nutr in adj_text.upper() for nutr in nutr_exclude):
+                        clean_text = adj_text
+                        adj_for_commodity = adj
+
+            if len(clean_text) < 3:
                 continue
 
             h_px = rect.get("height", 10.0)
             y_pos = rect.get("y", 9999.0)
 
+            has_commodity_kw = any(re.search(r'\b' + kw + r'\b', clean_text.upper()) for kw in self.known_commodity_keywords)
+            if not has_explicit_prefix and not has_commodity_kw:
+                # Discard low-prominence bottom-corner noise/watermarks (Rule 6(1)(b))
+                if len(clean_text) <= 3 or y_pos > 700:
+                    continue
+
             # Prominence scoring:
             score = block.get("confidence", 0.5) * 10.0 + (h_px / 4.0)
             if has_explicit_prefix:
-                score += 100.0  # Highest priority for explicit LMPC declaration
-            if any(re.search(r'\b' + kw + r'\b', clean_text.upper()) for kw in self.known_commodity_keywords):
+                score += 100.0  # Highest priority for statutory declaration
+            if has_commodity_kw:
                 score += 35.0
             if y_pos < 300:
                 score += 25.0
             elif y_pos < 500:
                 score += 15.0
 
-            commodity_candidates.append((score, block, clean_text, has_explicit_prefix))
+            commodity_candidates.append((score, block, clean_text, has_explicit_prefix, adj_for_commodity))
 
         if commodity_candidates:
             commodity_candidates.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_block, clean_text, has_prefix = commodity_candidates[0]
-            # Raised threshold from 15.0 to 25.0 — prevents garbled low-quality text from being picked
-            cand_conf = best_block["confidence"] if best_score >= 25.0 else 0.50
-            classified["commodity_name"] = {
-                "raw_text": best_block["text"].strip(),
-                "clean_name": clean_text or best_block["text"].strip(),
-                "has_explicit_declaration": has_prefix,
-                "confidence": cand_conf,
-                "bbox": best_block.get("bbox"),
-                "rect": best_block.get("rect"),
-                "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
-                "matched_blocks": [best_block]
+            best_score, best_block, clean_text, has_prefix, best_adj = commodity_candidates[0]
+            cand_conf = best_block["confidence"] if (has_prefix or best_score >= 25.0) else 0.60
+            if best_adj:
+                cand_conf = min(cand_conf, best_adj.get("confidence", 0.60))
+                combined_name = f"{best_block['text'].strip()} {clean_text}"
+                classified["commodity_name"] = _make_multiline_field_dict(
+                    [best_block, best_adj],
+                    clean_text,
+                    {
+                        "clean_name": clean_text,
+                        "original_ocr_text": combined_name,
+                        "has_explicit_declaration": True,
+                        "confidence": cand_conf
+                    }
+                )
+                b_id = best_block.get("id")
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
+                adj_id = best_adj.get("id")
+                if adj_id is not None:
+                    claimed_block_ids.add(adj_id)
+            else:
+                final_name = clean_text or best_block["text"].strip()
+                classified["commodity_name"] = {
+                    "raw_text": final_name,
+                    "clean_name": final_name,
+                    "original_ocr_text": best_block["text"].strip(),
+                    "has_explicit_declaration": has_prefix,
+                    "confidence": cand_conf,
+                    "bbox": best_block.get("bbox"),
+                    "rect": best_block.get("rect"),
+                    "font_height_px": float(best_block.get("rect", {}).get("height", 0.0)),
+                    "matched_blocks": [best_block]
+                }
+                b_id = best_block.get("id")
+                if b_id is not None:
+                    claimed_block_ids.add(b_id)
+
+        # --- Pass 8: Ingredients List Extraction (Spatial Column Aggregator) ---
+        ing_parts = []
+        ing_blocks = []
+        header_block = None
+
+        for block in valid_blocks:
+            b_id = block.get("id")
+            if b_id is None or b_id in claimed_block_ids:
+                continue
+            text = block.get("text", "").strip()
+            upper = text.upper()
+
+            if re.search(r'\b(?:INGREDIENTS?|COMPOSITION|CONTAINS|ઘટકો|સામગ્રી)\b\s*[:\-–—]?', upper):
+                header_block = block
+                cleaned = re.sub(r'^(?:INGREDIENTS?\s*(?:USED)?|COMPOSITION|CONTAINS|ઘટકો|સામગ્રી)\s*[:\-–—]\s*', '', text, flags=re.I).strip()
+                if cleaned:
+                    ing_parts.append(cleaned)
+                    ing_blocks.append(block)
+                break
+
+        if header_block is not None:
+            hr = header_block.get("rect", {})
+            hx = hr.get("x", 0.0)
+            hy = hr.get("y", 0.0)
+            hw = hr.get("width", 0.0)
+            hh = hr.get("height", 0.0)
+
+            col_min_x = hx - 40.0
+            col_max_x = hx + max(hw, 260.0) + 120.0
+            col_min_y = hy - 5.0
+
+            stop_keywords = [
+                'NUTRITION', 'NUTRITIONAL', 'PER 100', 'SERVING', 'MFG', 'MARKETED BY',
+                'MKT BY', 'MKTBY', 'MKT. BY', 'MANUFACTURED', 'MANUFACTUREDBY', 'MFD BY', 'MFDBY',
+                'PACKED BY', 'PKD BY', 'PKDBY', 'FSSAI', 'CUSTOMER CARE', 'CONSUMER CARE',
+                'STORAGE', 'KEEP REFRIGERATED', 'FOR ANY COMPLAINT', 'FOR SALE IN', 'LIC. NO',
+                'BATCH NO', 'NET QTY', 'NET WEIGHT', 'MRP'
+            ]
+
+            # Find the highest Y position of any section stop block within this column below the header
+            stop_y = float('inf')
+            for b in valid_blocks:
+                br = b.get("rect", {})
+                if not br:
+                    continue
+                bx = br.get("x", 0.0)
+                by = br.get("y", 0.0)
+                bw = br.get("width", 0.0)
+                if (col_min_x <= bx <= col_max_x or col_min_x <= (bx + bw) <= col_max_x):
+                    if by > col_min_y:
+                        bt = b.get("text", "").upper()
+                        if any(sk in bt for sk in stop_keywords):
+                            if by < stop_y:
+                                stop_y = by
+
+            column_candidates = []
+            for block in valid_blocks:
+                b_id = block.get("id")
+                if b_id is None or b_id == header_block.get("id") or b_id in claimed_block_ids:
+                    continue
+                br = block.get("rect", {})
+                if not br:
+                    continue
+                bx = br.get("x", 0.0)
+                by = br.get("y", 0.0)
+                bw = br.get("width", 0.0)
+
+                if by <= col_min_y or by >= stop_y:
+                    continue
+                if not (col_min_x <= bx <= col_max_x or col_min_x <= (bx + bw) <= col_max_x):
+                    continue
+                bt = block.get("text", "").upper()
+                if any(sk in bt for sk in stop_keywords):
+                    continue
+                column_candidates.append(block)
+
+            column_candidates.sort(key=lambda b: b.get("rect", {}).get("y", 0.0))
+
+            deduped_rows: List[Dict[str, Any]] = []
+            for cand in column_candidates:
+                cy = cand.get("rect", {}).get("y", 0.0)
+                cw = cand.get("rect", {}).get("width", 0.0)
+                merged_row = False
+                for idx, existing in enumerate(deduped_rows):
+                    ey = existing.get("rect", {}).get("y", 0.0)
+                    ew = existing.get("rect", {}).get("width", 0.0)
+                    if abs(cy - ey) <= 15.0:
+                        if cw > ew:
+                            deduped_rows[idx] = cand
+                        merged_row = True
+                        break
+                if not merged_row:
+                    deduped_rows.append(cand)
+
+            curr_y = hy + hh
+            for cand in deduped_rows:
+                cand_y = cand.get("rect", {}).get("y", 0.0)
+                cand_h = cand.get("rect", {}).get("height", 0.0)
+                gap = cand_y - curr_y
+                if gap > 75.0:
+                    break
+                cand_t = cand.get("text", "").strip()
+                if cand_t and cand not in ing_blocks:
+                    ing_parts.append(cand_t)
+                    ing_blocks.append(cand)
+                curr_y = cand_y + cand_h
+
+        if not ing_parts:
+            # Fallback: Comma-dense food ingredient block
+            for block in valid_blocks:
+                b_id = block.get("id")
+                if b_id is None or b_id in claimed_block_ids:
+                    continue
+                text = block.get("text", "").strip()
+                upper = text.upper()
+                if text.count(',') >= 2 and any(kw in upper for kw in ['SALT', 'SUGAR', 'OIL', 'FLOUR', 'SPICE', 'MASALA', 'WATER', 'CHILLI', 'JEERA', 'INS', 'PASTE', 'DHANA']):
+                    if not any(sh in upper for sh in ['MANUFACTURED', 'ROAD', 'DIST', 'PLOT', 'GIDC', 'PVT', 'LTD', 'CARE', 'PHONE']):
+                        ing_parts.append(text)
+                        ing_blocks.append(block)
+                        break
+
+        if ing_parts:
+            combined_ing = " ".join(ing_parts).strip()
+            classified["ingredients"] = {
+                "raw_text": combined_ing,
+                "confidence": 0.90,
+                "matched_blocks": ing_blocks,
+                "rect": ing_blocks[0].get("rect") if ing_blocks else None,
+                "bbox": ing_blocks[0].get("bbox") if ing_blocks else None
             }
+            for ib in ing_blocks:
+                ib_id = ib.get("id")
+                if ib_id is not None:
+                    claimed_block_ids.add(ib_id)
 
         classified["unclassified_blocks_count"] = max(0, len(valid_blocks) - len(claimed_block_ids))
 
@@ -1074,7 +1976,9 @@ class FieldClassifier:
                 "expiry_date": "expiry_date",
                 "manufacturer_details": "manufacturer_details",
                 "consumer_care": "consumer_care",
-                "fssai_number": "fssai_number"
+                "fssai_number": "fssai_number",
+                "ingredients": "ingredients",
+                "batch_number": "batch_number"
             }
 
             for class_key, llm_key in field_mapping.items():
@@ -1157,6 +2061,14 @@ class FieldClassifier:
                             "confidence": 0.85,
                             "llm_assisted": True
                         }
+                    elif class_key == "batch_number":
+                        classified["batch_number"] = str(llm_val)
+                    elif class_key == "ingredients":
+                        classified["ingredients"] = {
+                            "raw_text": str(llm_val),
+                            "confidence": 0.85,
+                            "llm_assisted": True
+                        }
                     else:
                         classified[class_key] = {
                             "raw_text": str(llm_val),
@@ -1166,8 +2078,9 @@ class FieldClassifier:
                     logger.info(f"Contextual NLP filled missing field '{class_key}': '{llm_val}'")
                 else:
                     # Both Regex and LLM extracted value - Upgrade confidence signal
-                    existing["confidence"] = max(existing.get("confidence", 0.70), 0.95)
-                    existing["llm_verified"] = True
+                    if isinstance(existing, dict):
+                        existing["confidence"] = max(existing.get("confidence", 0.70), 0.95)
+                        existing["llm_verified"] = True
                     logger.info(f"Contextual NLP Verified field '{class_key}' (Confidence upgraded to 0.95)")
 
             # Attach deep search metadata
@@ -1177,13 +2090,13 @@ class FieldClassifier:
                 classified["detected_languages"] = llm_extractions["detected_languages"]
             if llm_extractions.get("unit_sale_price"):
                 classified["unit_sale_price"] = llm_extractions["unit_sale_price"]
-            if llm_extractions.get("batch_number"):
+            if llm_extractions.get("batch_number") and not classified.get("batch_number"):
                 classified["batch_number"] = llm_extractions["batch_number"]
 
             # Attach matching block geometry to any fields that still lack rect/font_height_px
-            for class_key in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number"]:
+            for class_key in ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "commodity_name", "fssai_number", "ingredients"]:
                 f_obj = classified.get(class_key)
-                if f_obj and (not f_obj.get("rect") or not f_obj.get("font_height_px")):
+                if f_obj and isinstance(f_obj, dict) and (not f_obj.get("rect") or not f_obj.get("font_height_px")):
                     r_text = str(f_obj.get("raw_text", "")).strip()
                     best_b = None
                     best_score = 0.0
@@ -1221,10 +2134,16 @@ class FieldClassifier:
             "consumer_care": None,
             "fssai_number": None,
             "commodity_name": None,
+            "ingredients": None,
+            "batch_number": None,
             "unclassified_blocks_count": 0
         }
 
-        all_fields_keys = ["mrp", "net_quantity", "mfg_date", "expiry_date", "manufacturer_details", "consumer_care", "fssai_number", "commodity_name"]
+        all_fields_keys = [
+            "mrp", "net_quantity", "mfg_date", "expiry_date",
+            "manufacturer_details", "consumer_care", "fssai_number",
+            "commodity_name", "ingredients", "batch_number"
+        ]
 
         for res in side_results:
             side_fields = res.get("classified_fields", {})
@@ -1235,20 +2154,27 @@ class FieldClassifier:
                     if curr is None:
                         merged[key] = val
                     else:
-                        curr_conf = curr.get("confidence", 0.0) if isinstance(curr, dict) else 0.0
-                        new_conf = val.get("confidence", 0.0) if isinstance(val, dict) else 0.0
+                        curr_conf = curr.get("confidence", 0.0) if isinstance(curr, dict) else (0.8 if curr else 0.0)
+                        new_conf = val.get("confidence", 0.0) if isinstance(val, dict) else (0.8 if val else 0.0)
 
                         # Special case: commodity_name - prefer explicit declaration
                         if key == "commodity_name":
-                            if val.get("has_explicit_declaration") and not curr.get("has_explicit_declaration"):
+                            if isinstance(val, dict) and val.get("has_explicit_declaration") and (not isinstance(curr, dict) or not curr.get("has_explicit_declaration")):
                                 merged[key] = val
                             elif new_conf > curr_conf:
                                 merged[key] = val
                         # Special case: manufacturer_details - prefer more complete address
                         elif key == "manufacturer_details":
-                            if val.get("has_address") and not curr.get("has_address"):
+                            if isinstance(val, dict) and val.get("has_address") and (not isinstance(curr, dict) or not curr.get("has_address")):
                                 merged[key] = val
                             elif new_conf > curr_conf:
+                                merged[key] = val
+                        elif key == "ingredients":
+                            curr_text = curr.get("raw_text", "") if isinstance(curr, dict) else str(curr)
+                            new_text = val.get("raw_text", "") if isinstance(val, dict) else str(val)
+                            if len(new_text) > len(curr_text):
+                                merged[key] = val
+                            elif new_conf > curr_conf and len(new_text) >= len(curr_text) * 0.8:
                                 merged[key] = val
                         elif new_conf > curr_conf:
                             merged[key] = val

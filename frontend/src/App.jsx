@@ -126,15 +126,15 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 space-y-6">
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
         
         {/* General Error Alert */}
         {errorMsg && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between text-red-800 text-sm">
+          <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between text-red-800 text-sm font-medium">
             <span>⚠️ {errorMsg}</span>
             <button
               onClick={() => setErrorMsg(null)}
-              className="text-xs px-2.5 py-1 rounded bg-red-100 hover:bg-red-200 text-red-900 font-medium cursor-pointer"
+              className="text-xs px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 text-red-900 font-semibold cursor-pointer"
             >
               Dismiss
             </button>
@@ -149,24 +149,24 @@ export default function App() {
                 ✕
               </div>
               <div className="flex-1">
-                <h3 className="text-sm font-bold text-amber-900 mb-1">Product Mismatch Detected — Upload Rejected</h3>
-                <p className="text-xs text-amber-800 leading-relaxed">{mismatchError}</p>
+                <h3 className="text-base font-bold text-amber-900 mb-1">Product Mismatch Detected — Upload Rejected</h3>
+                <p className="text-sm text-amber-800 leading-relaxed">{mismatchError}</p>
                 <p className="text-xs text-amber-700 mt-2 font-medium">
                   All uploaded images must be different sides of the <strong>same product</strong>. 
                   Please remove conflicting images and try again.
                 </p>
               </div>
             </div>
-            <div className="flex gap-2 pt-1">
+            <div className="flex gap-2.5 pt-1">
               <button
                 onClick={() => { setMismatchError(null); setSelectedImages([]); }}
-                className="px-4 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 cursor-pointer"
+                className="px-4.5 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 cursor-pointer shadow-xs"
               >
                 Clear & Start Over
               </button>
               <button
                 onClick={() => setMismatchError(null)}
-                className="px-4 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 text-xs font-medium hover:bg-amber-50 cursor-pointer"
+                className="px-4.5 py-2 rounded-lg bg-white border border-amber-300 text-amber-800 text-sm font-medium hover:bg-amber-50 cursor-pointer shadow-xs"
               >
                 Dismiss (Edit Images)
               </button>
@@ -188,11 +188,11 @@ export default function App() {
           />
         ) : (
           <>
-            <div className="text-center space-y-2 py-2">
-              <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
+            <div className="text-center space-y-2.5 py-2">
+              <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">
                 Product Label Compliance Audit
               </h2>
-              <p className="text-sm text-gray-600 max-w-xl mx-auto">
+              <p className="text-base text-gray-600 max-w-2xl mx-auto leading-relaxed">
                 Upload one or more photos of a packaged product label to verify mandatory legal declarations, 
                 font letter sizes, and barcode accuracy against Legal Metrology Rules.
               </p>
@@ -210,7 +210,7 @@ export default function App() {
       </main>
 
       {/* Minimal Footer */}
-      <footer className="border-t border-gray-200 bg-white py-4 text-center text-xs text-gray-500">
+      <footer className="border-t border-gray-200 bg-white py-5 text-center text-sm text-gray-500">
         <p>MetroLens &bull; Legal Metrology (Packaged Commodities) Compliance Platform</p>
       </footer>
 

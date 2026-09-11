@@ -2,7 +2,7 @@ import logging
 import cv2
 import numpy as np
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from urllib.parse import urlparse, parse_qs
 
 logger = logging.getLogger("metrolens.barcode_engine")
@@ -157,17 +157,154 @@ class BarcodeQREngine:
             "parsed_attributes": attributes
         }
 
-    def decode_barcodes_and_qr(self, image: np.ndarray) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _verify_gs1_checksum(digits: List[int]) -> bool:
+        if len(digits) not in [8, 12, 13, 14]:
+            return False
+        check_digit = digits[-1]
+        core_digits = digits[:-1]
+        total = sum(d * (3 if idx % 2 == 0 else 1) for idx, d in enumerate(reversed(core_digits)))
+        return (10 - (total % 10)) % 10 == check_digit
+
+    def recover_barcodes_from_ocr_blocks(
+        self,
+        ocr_blocks: List[Dict[str, Any]],
+        image: Optional[np.ndarray] = None,
+        seen_data: Optional[Set[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Industrial Fallback: Recovers retail 1D barcodes (EAN-13, EAN-8, UPC-A) when optical line scanning
+        fails due to glossy glare, packaging curves, pouch crinkles, or motion blur.
+        Uses OCR Human-Readable Interpretation (HRI) numbers printed below the bars and verifies GS1 Modulo-10 checksums.
+        """
+        results: List[Dict[str, Any]] = []
+        if not ocr_blocks:
+            return results
+        if seen_data is None:
+            seen_data = set()
+
+        for b in ocr_blocks:
+            raw_text = b.get("text", "")
+            if not raw_text:
+                continue
+
+            # Standardize character confusions common in OCR of barcode font (OCR-B):
+            norm_text = raw_text.replace('l', '1').replace('|', '1').replace('I', '1')
+            digits = [int(c) for c in norm_text if c.isdigit()]
+
+            verified_code: Optional[str] = None
+            if len(digits) == 13:
+                if self._verify_gs1_checksum(digits):
+                    verified_code = "".join(map(str, digits))
+                # Indian packaging OCR repair: 840... or 810... where 9 was confused for 4 or 1
+                elif digits[0] == 8 and digits[2] == 0:
+                    repair_digits = list(digits)
+                    repair_digits[1] = 9
+                    if self._verify_gs1_checksum(repair_digits):
+                        verified_code = "".join(map(str, repair_digits))
+            elif len(digits) in [8, 12, 14]:
+                if self._verify_gs1_checksum(digits):
+                    verified_code = "".join(map(str, digits))
+
+            if verified_code and verified_code not in seen_data:
+                b_rect = b.get("rect", {})
+                rect_dict = {
+                    "x": float(b_rect.get("x", 0.0)),
+                    "y": float(b_rect.get("y", 0.0)),
+                    "width": float(b_rect.get("width", 100.0)),
+                    "height": float(b_rect.get("height", 30.0))
+                }
+
+                # Attempt focused localized ZXing crop above the text block (where bars are located)
+                optical_found = False
+                if image is not None and self.has_zxing and self.zxing is not None and rect_dict["width"] > 0:
+                    try:
+                        ih, iw = image.shape[:2]
+                        bx = int(rect_dict["x"])
+                        by = int(rect_dict["y"])
+                        bw = int(rect_dict["width"])
+                        bh = int(rect_dict["height"])
+
+                        crop_y1 = max(0, by - int(bh * 4.5))
+                        crop_y2 = min(ih, by + int(bh * 1.5))
+                        crop_x1 = max(0, bx - int(bw * 0.2))
+                        crop_x2 = min(iw, bx + int(bw * 1.2))
+
+                        if crop_y2 > crop_y1 and crop_x2 > crop_x1:
+                            crop = image[crop_y1:crop_y2, crop_x1:crop_x2]
+                            crop_variants = self._generate_enhanced_variants(crop)
+                            for c_var, _ in crop_variants[:3]:
+                                b_codes = self.zxing.read_barcodes(c_var)
+                                for bc in b_codes:
+                                    bc_txt = bc.text.strip() if bc.text else ""
+                                    if bc_txt == verified_code:
+                                        payload_info = self._parse_qr_payload(bc_txt, "EAN13")
+                                        results.append({
+                                            "type": "EAN13",
+                                            "format": str(bc.format).replace("BarcodeFormat.", ""),
+                                            "data": bc_txt,
+                                            "is_url": False,
+                                            "original_url": None,
+                                            "category": "GTIN_BARCODE",
+                                            "summary": f"Retail GTIN Barcode: {bc_txt}",
+                                            "parsed_attributes": payload_info["parsed_attributes"],
+                                            "rect": rect_dict,
+                                            "recovery_method": "Localized Crop Optical Barcode Recovery",
+                                            "engine": "ZXing-C++"
+                                        })
+                                        seen_data.add(bc_txt)
+                                        optical_found = True
+                                        break
+                                if optical_found:
+                                    break
+                    except Exception as cr_err:
+                        logger.debug(f"Barcode crop pass error: {cr_err}")
+
+                if not optical_found and verified_code not in seen_data:
+                    # Verified GS1 Human-Readable Interpretation (HRI) recovery
+                    country = "India (GS1 890)" if verified_code.startswith("890") else "GS1 Standard"
+                    results.append({
+                        "type": "EAN13" if len(verified_code) == 13 else ("EAN8" if len(verified_code) == 8 else "UPCA"),
+                        "format": f"EAN-{len(verified_code)} (HRI)",
+                        "data": verified_code,
+                        "is_url": False,
+                        "original_url": None,
+                        "category": "GTIN_BARCODE",
+                        "summary": f"Retail GTIN Barcode: {verified_code}",
+                        "parsed_attributes": {
+                            "gtin": verified_code,
+                            "country_origin": country,
+                            "checksum_verified": True
+                        },
+                        "rect": rect_dict,
+                        "recovery_method": "OCR Human-Readable Interpretation (HRI) Checksum Verification",
+                        "engine": "OCR-HRI-GS1"
+                    })
+                    seen_data.add(verified_code)
+
+        return results
+
+    def decode_barcodes_and_qr(
+        self,
+        image: np.ndarray,
+        ocr_blocks: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Comprehensive Multi-Stage Barcode & QR Code Decoder.
-        Tries ZXing-C++, PyZbar, and OpenCV across multi-enhancement filters
-        to guarantee decoding even under poor image conditions.
+        Tries ZXing-C++, PyZbar, and OpenCV across multi-enhancement filters,
+        with localized optical crop and OCR GS1 HRI verification fallback.
         """
-        results = []
-        seen_data = set()
+        results: List[Dict[str, Any]] = []
+        seen_data: Set[str] = set()
 
         if image is None or image.size == 0:
             return results
+
+        def has_1d() -> bool:
+            return any(r.get("category") == "GTIN_BARCODE" or r.get("type") in ["EAN13", "EAN8", "UPCA", "CODE128", "EAN_13", "EAN_8", "UPC_A"] for r in results)
+
+        def has_qr() -> bool:
+            return any(r.get("type") == "QRCODE" for r in results)
 
         variants = self._generate_enhanced_variants(image)
 
@@ -183,9 +320,8 @@ class BarcodeQREngine:
 
                         format_str = str(b.format).replace("BarcodeFormat.", "")
                         b_type = "QRCODE" if "QR" in format_str.upper() else format_str.upper()
-                        
+
                         pos = b.position
-                        # ZXing provides 4 corners: top_left, top_right, bottom_right, bottom_left
                         try:
                             xs = [pos.top_left.x, pos.top_right.x, pos.bottom_right.x, pos.bottom_left.x]
                             ys = [pos.top_left.y, pos.top_right.y, pos.bottom_right.y, pos.bottom_left.y]
@@ -216,12 +352,12 @@ class BarcodeQREngine:
                 except Exception as zx_err:
                     logger.debug(f"ZXing pass error ({method}): {zx_err}")
 
-                # If QR code decoded successfully, we can avoid excessive subsequent passes
-                if any(r["type"] == "QRCODE" for r in results):
+                # If BOTH 1D barcode and QR code are decoded, we can stop variants search
+                if has_1d() and has_qr():
                     break
 
         # PASS 2: PyZbar Decoding fallback
-        if not any(r["type"] == "QRCODE" for r in results):
+        if not (has_1d() and has_qr()):
             try:
                 from pyzbar import pyzbar
                 for var_img, method in variants[:3]:
@@ -247,13 +383,13 @@ class BarcodeQREngine:
                             "engine": "PyZbar"
                         })
                         seen_data.add(txt)
-                    if any(r["type"] == "QRCODE" for r in results):
+                    if has_1d() and has_qr():
                         break
             except Exception as pz_err:
                 logger.debug(f"PyZbar decoding fallback skipped: {pz_err}")
 
-        # PASS 3: OpenCV QRCodeDetectorAruco & QRCodeDetector
-        if not any(r["type"] == "QRCODE" for r in results):
+        # PASS 3: OpenCV QRCodeDetectorAruco & QRCodeDetector for missing QR code
+        if not has_qr():
             try:
                 aruco_det = cv2.QRCodeDetectorAruco()
                 for var_img, method in variants[:3]:
@@ -279,8 +415,8 @@ class BarcodeQREngine:
             except Exception as aruco_err:
                 logger.debug(f"OpenCV Aruco detector skipped: {aruco_err}")
 
-        # PASS 4: Rotation checks for angled / skewed packaging if still no QR code found
-        if not any(r["type"] == "QRCODE" for r in results) and self.has_zxing and self.zxing is not None:
+        # PASS 4: Rotation checks for angled / skewed packaging if still missing 1D or QR
+        if not (has_1d() and has_qr()) and self.has_zxing and self.zxing is not None:
             zxing_engine = self.zxing
             for angle in [90, 180, 270]:
                 rot_code = cv2.ROTATE_90_CLOCKWISE if angle == 90 else (cv2.ROTATE_180 if angle == 180 else cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -310,8 +446,15 @@ class BarcodeQREngine:
                         seen_data.add(txt)
                 except Exception:
                     pass
-                if any(r["type"] == "QRCODE" for r in results):
+                if has_1d() and has_qr():
                     break
+
+        # PASS 5: OCR Human-Readable Interpretation (HRI) 1D Barcode Recovery
+        # If optical scan could not decode 1D barcode stripes due to pouch crinkles/curves/glare,
+        # recover from mathematically verified GS1 digits below the code
+        if not has_1d() and ocr_blocks:
+            hri_barcodes = self.recover_barcodes_from_ocr_blocks(ocr_blocks, image, seen_data)
+            results.extend(hri_barcodes)
 
         logger.info(f"Total decoded barcodes/QRs: {len(results)} (Engines: {[r['engine'] for r in results]})")
         return results

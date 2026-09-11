@@ -83,28 +83,28 @@ export default function HistoryView({ onSelectScan }) {
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
+    <div className="w-full max-w-5xl mx-auto space-y-6">
       
       {/* Header & Controls */}
       <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4 shadow-sm">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
-            <h2 className="text-xl font-bold text-gray-900">Past Audit History</h2>
-            <p className="text-xs text-gray-500">
-              Repository of scanned labels and LMPC compliance reports. Local images stored in <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">backend/uploads</code>
+            <h2 className="text-2xl font-bold text-gray-900">Past Audit History</h2>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Repository of scanned labels and LMPC compliance reports. Local images stored in <code className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-800 font-mono text-xs">backend/uploads</code>
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={fetchScans}
-              className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold cursor-pointer"
+              className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold cursor-pointer transition-colors"
             >
               Refresh
             </button>
             {scans.length > 0 && (
               <button
                 onClick={handleClearAllHistory}
-                className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-sm font-semibold cursor-pointer transition-colors"
               >
                 Clear All History
               </button>
@@ -120,7 +120,7 @@ export default function HistoryView({ onSelectScan }) {
               placeholder="Search by product name..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 text-xs text-gray-900 focus:outline-none focus:border-gray-900"
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-900 focus:outline-none focus:border-gray-900 transition-colors"
             />
           </div>
 
@@ -128,7 +128,7 @@ export default function HistoryView({ onSelectScan }) {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-lg border border-gray-300 text-xs text-gray-900 bg-white focus:outline-none focus:border-gray-900"
+              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white focus:outline-none focus:border-gray-900 transition-colors"
             >
               <option value="">All Statuses</option>
               <option value="COMPLIANT">COMPLIANT</option>
@@ -142,25 +142,25 @@ export default function HistoryView({ onSelectScan }) {
       {/* Scans List Table */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         {loading ? (
-          <div className="p-8 text-center text-xs text-gray-500">Loading audit history...</div>
+          <div className="p-8 text-center text-sm text-gray-500">Loading audit history...</div>
         ) : error ? (
-          <div className="p-8 text-center text-xs text-red-600 font-medium">{error}</div>
+          <div className="p-8 text-center text-sm text-red-600 font-medium">{error}</div>
         ) : scans.length === 0 ? (
-          <div className="p-8 text-center text-xs text-gray-500">
+          <div className="p-8 text-center text-sm text-gray-500">
             No past scans found matching your search.
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full text-left text-sm">
               <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 font-semibold">
                 <tr>
-                  <th className="py-2.5 px-4"># ID</th>
-                  <th className="py-2.5 px-4">Product Name</th>
-                  <th className="py-2.5 px-4">Date / Time</th>
-                  <th className="py-2.5 px-4">LMPC Status</th>
-                  <th className="py-2.5 px-4">Ingredients Safety</th>
-                  <th className="py-2.5 px-4">Score</th>
-                  <th className="py-2.5 px-4 text-right">Actions</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold"># ID</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Product Name</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Date / Time</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">LMPC Status</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Ingredients Safety</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Score</th>
+                  <th className="py-3 px-4 text-right text-xs uppercase tracking-wider font-bold">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-gray-900">
@@ -170,11 +170,11 @@ export default function HistoryView({ onSelectScan }) {
                     onClick={() => handleRowClick(scan.id)}
                     className="hover:bg-gray-50 cursor-pointer transition-colors"
                   >
-                    <td className="py-3 px-4 font-mono font-bold text-gray-400">#{scan.id}</td>
-                    <td className="py-3 px-4 font-semibold text-gray-900 max-w-xs truncate">
+                    <td className="py-3.5 px-4 font-mono font-bold text-gray-400 text-xs">#{scan.id}</td>
+                    <td className="py-3.5 px-4 font-semibold text-gray-900 text-sm max-w-xs truncate">
                       {scan.product_name || 'Unknown Product'}
                     </td>
-                    <td className="py-3 px-4 text-gray-500 font-mono text-[11px]">
+                    <td className="py-3.5 px-4 text-gray-500 font-mono text-xs">
                       {scan.timestamp
                         ? new Date(scan.timestamp).toLocaleString('en-IN', {
                             day: '2-digit', month: 'short', year: 'numeric',
@@ -182,14 +182,14 @@ export default function HistoryView({ onSelectScan }) {
                           })
                         : '-'}
                     </td>
-                    <td className="py-3 px-4">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${getStatusBadge(scan.overall_status)}`}>
+                    <td className="py-3.5 px-4">
+                      <span className={`text-xs font-bold px-2.5 py-1 rounded border uppercase ${getStatusBadge(scan.overall_status)}`}>
                         {scan.overall_status}
                       </span>
                     </td>
-                    <td className="py-3 px-4">
+                    <td className="py-3.5 px-4">
                       {scan.ingredient_verdict && scan.ingredient_verdict !== 'NOT_CHECKED' ? (
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded border uppercase ${
                           scan.ingredient_verdict === 'SAFE'
                             ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
                             : scan.ingredient_verdict === 'CAUTION'
@@ -202,23 +202,23 @@ export default function HistoryView({ onSelectScan }) {
                           {scan.ingredient_score != null && ` (${scan.ingredient_score})`}
                         </span>
                       ) : (
-                        <span className="text-[11px] text-gray-400 italic">—</span>
+                        <span className="text-xs text-gray-400 italic">—</span>
                       )}
                     </td>
-                    <td className="py-3 px-4 font-mono font-bold text-gray-800">
+                    <td className="py-3.5 px-4 font-mono font-bold text-gray-800 text-sm">
                       {scan.compliance_score}%
                     </td>
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleRowClick(scan.id)}
-                          className="px-2.5 py-1 rounded bg-gray-900 hover:bg-gray-800 text-white font-medium text-[11px] cursor-pointer"
+                          className="px-3 py-1.5 rounded-md bg-gray-900 hover:bg-gray-800 text-white font-semibold text-xs cursor-pointer transition-colors"
                         >
                           View Report
                         </button>
                         <button
                           onClick={() => handleDeleteScan(scan.id, scan.product_name)}
-                          className="px-2 py-1 rounded bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-medium text-[11px] cursor-pointer"
+                          className="px-2.5 py-1.5 rounded-md bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-semibold text-xs cursor-pointer transition-colors"
                           title="Delete scan and uploaded image"
                         >
                           Delete
