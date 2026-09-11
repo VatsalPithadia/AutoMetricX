@@ -251,8 +251,9 @@ Return ONLY valid JSON matching this exact structure:
     # =========================================================================
     def _search_manufacturer_details(self, lines: List[str], text: str) -> Dict[str, Any]:
         """
-        Searches for Manufacturer, Packer, Marketer name, multi-line GIDC/MIDC address,
-        city, state, and 6-digit Indian PIN code in English, Gujarati, and Hindi.
+        Searches for genuine Manufacturer / Packer entity name, clean physical address,
+        and authentic 6-digit Indian PIN code in English, Gujarati, and Hindi.
+        Strictly excludes allergen disclaimers, nutritional facts, social tags, and OCR noise.
         """
         res: Dict[str, Any] = {
             "company_name": None,
@@ -276,51 +277,155 @@ Return ONLY valid JSON matching this exact structure:
         ]
         combined_header_re = re.compile(r'(' + '|'.join(mfg_headers) + r')\s*[:=.\s]*', re.IGNORECASE)
 
+        # Filter out noisy or allergen lines
+        allergen_terms = [
+            "FACILITY THAT", "PROCESSES THESE", "ALLERGEN", "MAY CONTAIN",
+            "DRODUCTMANUFACTURED", "PRODUCT MANUFACTURED", "FACILITYTHAT"
+        ]
+        stop_terms = [
+            "NUTRITION", "INGREDIENTS", "NET QTY", "NET WT", "MRP RS", "BATCH NO",
+            "FSSAI LIC", "LIC NO", "CUSTOMER CARE", "CONSUMER CARE", "FEEDBACK",
+            "SERVING SIZE", "%RDA", "CALORIES", "ગ્રાહક સેવા", "સંપર્ક", "SCANTO",
+            "WWW.", "@SUHANA", "TASTEMAKERS"
+        ]
+
         start_idx = -1
         for idx, line in enumerate(lines):
+            ln_up = line.upper()
+            if any(at in ln_up for at in allergen_terms):
+                continue
             if combined_header_re.search(line):
                 start_idx = idx
                 break
 
         collected = []
         if start_idx != -1:
-            for i in range(start_idx, min(len(lines), start_idx + 6)):
+            for i in range(start_idx, min(len(lines), start_idx + 20)):
                 ln = lines[i].strip()
-                # Stop if hitting another distinct declaration
-                if i > start_idx and any(term in ln.upper() for term in ["NUTRITION", "INGREDIENTS", "NET QTY", "NET WT", "MRP RS", "BATCH NO", "FSSAI LIC", "LIC NO", "CUSTOMER CARE", "CONSUMER CARE", "FEEDBACK", "ગ્રાહક સેવા", "સંપર્ક"]):
+                ln_up = ln.upper()
+                if any(at in ln_up for at in allergen_terms):
+                    continue
+                if i > start_idx and any(term in ln_up for term in stop_terms):
                     break
-                collected.append(ln)
+                # Skip empty or lone punctuation lines
+                if len(re.sub(r'[^A-Za-z0-9]', '', ln)) > 0:
+                    collected.append(ln)
         else:
             # Fallback: look for company suffix + GIDC / PIN
             for idx, line in enumerate(lines):
-                if re.search(r'\b(PVT\.?\s*LTD|LIMITED|LTD\.?|FOODS|INDUSTRIES|PRODUCTS|DAIRY)\b', line, re.IGNORECASE):
+                ln_up = line.upper()
+                if any(at in ln_up for at in allergen_terms):
+                    continue
+                if re.search(r'\b(PVT\.?\s*LTD|LIMITED|LTD\.?|FOODS|INDUSTRIES|PRODUCTS|DAIRY|AGRO|MASALEWALE)\b', line, re.IGNORECASE):
                     for j in range(idx, min(len(lines), idx + 5)):
-                        collected.append(lines[j])
+                        j_ln = lines[j].strip()
+                        if any(at in j_ln.upper() for at in allergen_terms) or any(st in j_ln.upper() for st in stop_terms):
+                            break
+                        collected.append(j_ln)
                     break
 
         if collected:
-            raw_str = " ".join(collected)
-            res["raw_text"] = raw_str
-            res["has_name"] = True
+            # Determine genuine Company Name
+            header_stripped = re.sub(combined_header_re, '', collected[0]).strip()
+            header_stripped = re.sub(r'^[^\w]+|[^\w]+$', '', header_stripped)
 
-            # Extract 6-digit Indian PIN code
-            pin_m = re.search(r'\b([1-8]\d{5})\b', raw_str)
-            if pin_m:
-                res["pin_code"] = pin_m.group(1)
+            company_candidate = None
+            company_line_idx = -1
 
-            # Check if address keywords exist (Plot, GIDC, Road, City, State, etc.)
-            addr_keywords = [
-                "PLOT", "GIDC", "MIDC", "ESTATE", "INDUSTRIAL", "ROAD", "STREET", "SURVEY",
-                "DIST", "TALUKA", "PO", "TEHSIL", "VILLAGE", "GUJARAT", "MAHARASHTRA", "MUMBAI",
-                "AHMEDABAD", "SURAT", "VADODARA", "RAJKOT", "DELHI", "જી.આઈ.ડી.સી.", "અમદાવાદ", "ગુજરાત"
-            ]
-            if any(ak in raw_str.upper() for ak in addr_keywords) or res["pin_code"]:
-                res["has_address"] = True
+            company_suffix_pattern = re.compile(
+                r'\b[A-Za-z]*(?:PVT\.?\s*LTD|LIMITED|LTD\.?|FOODS(?:\s*LTD)?|INDUSTRIES|ENTERPRISES|PRODUCTS|DAIRY|AGRO|PHARMA|MASALEWALE|BAKERY)\b',
+                re.IGNORECASE
+            )
 
-            # Clean company name
-            clean_company = re.sub(combined_header_re, '', collected[0]).strip()
-            res["company_name"] = clean_company or collected[0]
-            res["address"] = " ".join(collected[1:]) if len(collected) > 1 else raw_str
+            # Check if header line itself contains the company name after the header prefix
+            if header_stripped and len(header_stripped) >= 3 and not re.search(r'\b(?:ROAD|STREET|PLOT|DIST|GIDC|PIN)\b', header_stripped, re.IGNORECASE):
+                company_candidate = header_stripped
+                company_line_idx = 0
+            else:
+                # Search subsequent collected lines for company entity
+                for c_idx, cl in enumerate(collected):
+                    cleaned_l = re.sub(combined_header_re, '', cl).strip()
+                    cleaned_l = re.sub(r'^[^\w]+|[^\w]+$', '', cleaned_l)
+                    if company_suffix_pattern.search(cleaned_l) and len(cleaned_l) >= 3:
+                        company_candidate = cleaned_l
+                        company_line_idx = c_idx
+                        break
+
+                # If still not found, check line right after header
+                if not company_candidate and len(collected) > 1:
+                    first_after = re.sub(combined_header_re, '', collected[1]).strip()
+                    first_after = re.sub(r'^[^\w]+|[^\w]+$', '', first_after)
+                    if len(first_after) >= 3:
+                        company_candidate = first_after
+                        company_line_idx = 1
+                elif not company_candidate and header_stripped:
+                    company_candidate = header_stripped
+                    company_line_idx = 0
+
+            # Further sanitize company_candidate
+            if company_candidate:
+                company_candidate = re.sub(combined_header_re, '', company_candidate).strip()
+                company_candidate = company_candidate.split('\n')[0].strip()
+                # If excessively long, trim to entity boundary
+                if len(company_candidate) > 70:
+                    match_suf = company_suffix_pattern.search(company_candidate)
+                    if match_suf:
+                        company_candidate = company_candidate[:match_suf.end()].strip()
+                    else:
+                        company_candidate = company_candidate[:70].strip()
+
+            # Separate Address lines (strictly excluding nutritional facts or metric table noise)
+            nutrition_kw = {'FAT', 'SUGAR', 'PROTEIN', 'CARBOHYDRATE', 'CHOLESTEROL', 'SODIUM', 'ENERGY', 'KCAL', 'CALORIE', 'RDA', 'SERVING', 'PER', 'APPROX'}
+            addr_lines = []
+            for c_idx, cl in enumerate(collected):
+                if c_idx == company_line_idx:
+                    continue
+                cleaned_l = re.sub(combined_header_re, '', cl).strip()
+                cleaned_l = re.sub(r'^[^\w(]+|[^\w)]+$', '', cleaned_l)
+                if not cleaned_l or cleaned_l == company_candidate or len(cleaned_l) <= 1:
+                    continue
+                up_l = cleaned_l.upper()
+                if any(k in up_l for k in nutrition_kw):
+                    continue
+                if re.match(r'^[\d.\s]+(?:G|MG|KCAL|%|GM|ML)?$', up_l, re.I):
+                    continue
+                addr_lines.append(cleaned_l)
+
+            # Robust Indian PIN code extraction
+            search_pool = " ".join(collected) + " " + text
+            # Explicit pin pattern: "Pin 412801(INDIA)", "Pin: 382330", "Pune - 411001", "Assam-785001"
+            pin_explicit = re.findall(r'(?:PIN(?:\s*CODE)?[:\s.-]*|INDIA\s*[-–]\s*|(?<!\d)-)\s*([1-8]\d{5})\b', search_pool, re.IGNORECASE)
+            pin_found = None
+            if pin_explicit:
+                for cand in pin_explicit:
+                    # Validate candidate is not immediately followed by decimal (e.g. 202623.00)
+                    if not re.search(r'\b' + cand + r'\.\d', search_pool):
+                        pin_found = cand
+                        break
+
+            if not pin_found:
+                # Look for PIN followed by (INDIA) or state/city
+                pin_india = re.findall(r'\b([1-8]\d{5})\s*\((?:INDIA|IND)\)', search_pool, re.IGNORECASE)
+                for cand in pin_india:
+                    if not re.search(r'\b' + cand + r'\.\d', search_pool):
+                        pin_found = cand
+                        break
+
+            if not pin_found:
+                # Fallback: standard 6-digit Indian PIN not preceded by month/year and not followed by decimals
+                for pm in re.finditer(r'(?<![A-Za-z0-9.])([1-8]\d{5})(?!\.\d)(?![0-9])', " ".join(collected)):
+                    cand = pm.group(1)
+                    pre_ctx = " ".join(collected)[max(0, pm.start()-10):pm.start()].upper()
+                    if not any(m in pre_ctx for m in ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC', '202']):
+                        pin_found = cand
+                        break
+
+            res["company_name"] = company_candidate or "Declared Entity"
+            res["pin_code"] = pin_found
+            res["address"] = ", ".join(addr_lines) if addr_lines else (company_candidate or "Declared Entity")
+            res["raw_text"] = f"{res['company_name']}, {res['address']}" if res['address'] != res['company_name'] else res['company_name']
+            res["has_name"] = bool(company_candidate)
+            res["has_address"] = bool(addr_lines or pin_found)
 
         return res
 

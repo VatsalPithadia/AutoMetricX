@@ -6,7 +6,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
   const [copied, setCopied] = useState(false);
   const [showBoxes, setShowBoxes] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState(null);
-  const [activeTab, setActiveTab] = useState('compliance'); // 'compliance' | 'search' | 'overlay' | 'raw'
+  const [activeTab, setActiveTab] = useState('compliance'); // 'compliance' | 'overlay' | 'raw'
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [activeSideIdx, setActiveSideIdx] = useState(0); // For multi-side overlay tab
   const [inspectingCode, setInspectingCode] = useState(null); // Modal state for QR / Barcode inspection
@@ -58,18 +58,15 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
   const classified = result.classified_fields || {};
   const declarations = report.declarations || [];
   const deepSearch = classified.deep_search_details || {};
-  const detectedLangs = result.detected_languages || classified.detected_languages || ['English'];
-  const hasVertical = result.has_vertical_text || false;
   const barcodeAnalysis = result.barcode_qr_analysis || {};
-  const decodedCodes = barcodeAnalysis.decoded_codes || [];
 
   // Determine which image + blocks to show in overlay tab
   const activeOverlaySide = isMultiSide && sideImages.length > activeSideIdx
     ? sideImages[activeSideIdx]
     : null;
   const overlayImageUrl = isMultiSide && activeOverlaySide
-    ? (sidePreviewUrls?.[activeSideIdx] || `${API_BASE_URL}/uploads/${activeOverlaySide.saved_file}`)
-    : imagePreviewUrl;
+    ? (sidePreviewUrls?.[activeSideIdx] || `${API_BASE_URL}/uploads/${activeOverlaySide.saved_file || activeOverlaySide.filename}`)
+    : (imagePreviewUrl || (result.saved_file ? `${API_BASE_URL}/uploads/${result.saved_file}` : (result.image_filename ? `${API_BASE_URL}/uploads/${result.image_filename}` : (result.filename ? `${API_BASE_URL}/uploads/${result.filename}` : null))));
   const overlayBlocks = isMultiSide && activeOverlaySide
     ? activeOverlaySide.ocr_blocks || []
     : (result.ocr_blocks || []);
@@ -87,10 +84,124 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
     }
   };
 
-  const formatLangName = (l) => {
-    if (l === 'gu' || l === 'Gujarati') return 'Gujarati (ગુજરાતી)';
-    if (l === 'hi' || l === 'Hindi') return 'Hindi (हिन्दी)';
-    return 'English';
+
+  const legibility = report.font_legibility_analysis;
+  const rule9 = legibility?.rule_9_1_mrp_prominence;
+
+  const declaredWeightStr = legibility?.declared_net_quantity ||
+    classified.net_quantity?.formatted_value ||
+    classified.net_quantity?.raw_text ||
+    (classified.net_quantity?.numeric_value ? `${classified.net_quantity.numeric_value} ${classified.net_quantity.unit || 'g'}` : 'Not Isolated');
+
+  const detectedCategoryStr = legibility?.product_category ||
+    (classified.commodity_name?.clean_name || classified.commodity_name?.raw_text || 'Packaged Commodity');
+
+
+  const getFieldLabel = (field) => {
+    switch (field) {
+      case 'net_quantity': return 'Net Quantity';
+      case 'mrp': return 'Maximum Retail Price (MRP)';
+      case 'mfg_date': return 'Mfg / Packing Date';
+      case 'expiry_date': return 'Expiry / Best Before';
+      case 'commodity_name': return 'Commodity Name';
+      case 'manufacturer_details': return 'Manufacturer / Packer';
+      case 'consumer_care': return 'Consumer Care Contact';
+      default: return field.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  };
+
+  const renderFontHeightBox = () => {
+    if (!legibility) return null;
+
+    const minReq = legibility.min_required_letter_height_mm || 1.0;
+    const evaluations = legibility.rule_7_3_field_evaluations || [];
+    const allPass = evaluations.length > 0 && evaluations.every((e) => e.status === 'PASS');
+
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4 shadow-sm">
+        {/* Section Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-800 font-bold text-xs">
+              Rule 7 & 9
+            </span>
+            <h3 className="text-sm font-bold text-gray-900">Font Height (mm) Verification</h3>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs px-2.5 py-1 rounded-md bg-gray-100 text-gray-700 font-medium">
+              Min Required: <strong className="text-gray-900">{minReq} mm</strong> ({declaredWeightStr})
+            </span>
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-md ${
+              allPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+            }`}>
+              {allPass ? '✓ ALL PASS' : '⚠️ REVIEW HEIGHTS'}
+            </span>
+          </div>
+        </div>
+
+        {/* Clean, Simple Table (No Icons, Plain & Direct) */}
+        {evaluations.length > 0 && (
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 font-semibold">
+                <tr>
+                  <th className="py-2.5 px-3">Field</th>
+                  <th className="py-2.5 px-3">Measured Size</th>
+                  <th className="py-2.5 px-3">Statutory Min</th>
+                  <th className="py-2.5 px-3 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 text-gray-800">
+                {evaluations.map((item, i) => {
+                  const measured = item.font_height_mm;
+                  const req = item.min_required_mm || minReq;
+                  const isPass = item.status === 'PASS';
+
+                  return (
+                    <tr key={i} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="py-2.5 px-3 font-medium text-gray-900">
+                        {getFieldLabel(item.field)}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono font-bold text-gray-900 text-xs">
+                        {measured != null ? `${measured} mm` : '—'}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-gray-600 text-xs">
+                        {req} mm
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                          isPass ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}>
+                          {isPass ? 'PASS' : 'BELOW MIN'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Rule 9(1) MRP Prominence Note */}
+        {rule9 && (
+          <div className="p-3 rounded-lg border border-gray-200 bg-gray-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="text-gray-700">
+              <span className="font-bold text-gray-900">Rule 9(1) MRP Prominence: </span>
+              <span>
+                MRP height ({rule9.mrp_font_height_mm != null ? `${rule9.mrp_font_height_mm} mm` : '—'}) vs surrounding text ({rule9.avg_body_font_height_mm != null ? `${rule9.avg_body_font_height_mm} mm` : '—'}) • Ratio: <strong>{rule9.prominence_ratio || 1.0}x</strong> (Required: ≥ 1.20x)
+              </span>
+            </div>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase shrink-0 ${
+              rule9.status === 'PASS' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+            }`}>
+              {rule9.status === 'PASS' ? 'PROMINENT' : 'LOW PROMINENCE'}
+            </span>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -114,25 +225,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             </div>
             <p className="text-xs text-gray-500 font-mono mt-0.5">
               {isMultiSide
-                ? `${result.total_sides} package sides scanned • Score: ${report.compliance_score || 0}% (${report.passed_rules_count || 0}/${report.total_rules_checked || 8} Rules Passed)`
-                : `File: ${result.filename} • Score: ${report.compliance_score || 0}% (${report.passed_rules_count || 0}/${report.total_rules_checked || 8} Rules Passed)`
+                ? `${result.total_sides} package sides scanned`
+                : `File: ${result.filename}`
               }
             </p>
-
-            {/* Language & Orientation Tags */}
-            <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Detected:</span>
-              {detectedLangs.map((lang) => (
-                <span key={lang} className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  🌐 {formatLangName(lang)}
-                </span>
-              ))}
-              {hasVertical && (
-                <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                  ↕ Vertical Format Captured
-                </span>
-              )}
-            </div>
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -161,35 +257,27 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
           </div>
         )}
 
-        {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 border-b border-gray-100 pb-1">
+        {/* Navigation Tabs (3 Menu Options) */}
+        <div className="flex items-center gap-2 border-b border-gray-100 pb-1 flex-wrap">
           <button
             onClick={() => setActiveTab('compliance')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
               activeTab === 'compliance' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
             Compliance Declarations
           </button>
           <button
-            onClick={() => setActiveTab('search')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-              activeTab === 'search' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
-          >
-            Deep Extraction Search
-          </button>
-          <button
             onClick={() => setActiveTab('overlay')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
               activeTab === 'overlay' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
-            {isMultiSide ? `Label Images (${result.total_sides} Sides)` : 'Label Image & Overlay'}
+            {isMultiSide ? `Label Image (${result.total_sides} Sides)` : 'Label Image'}
           </button>
           <button
             onClick={() => setActiveTab('raw')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
               activeTab === 'raw' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
@@ -342,167 +430,62 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             </div>
           </div>
 
-          {/* Legal Metrology Rules Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {declarations.map((decl, idx) => {
-              const st = getStatusBadge(decl.status);
-              return (
-                <div key={idx} className="p-4 rounded-xl border border-gray-200 bg-white space-y-2 shadow-2xs">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
-                        {decl.clause}
+          {/* Rules Box: Mandatory Declarations Compliance (Rule 6) */}
+          <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4 shadow-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-gray-900 text-white font-bold text-xs uppercase tracking-wider">
+                  RULE 6
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900">Mandatory Declarations Compliance</h3>
+                  <p className="text-xs text-gray-500">Verification of required label declarations under Legal Metrology Rules</p>
+                </div>
+              </div>
+              {declarations.length > 0 && (
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-gray-100 text-gray-700">
+                  {declarations.filter(d => !d.clause?.includes('Rule 7') && !d.clause?.includes('Rule 9') && (d.status === 'COMPLIANT' || d.status === 'PASS')).length} / {declarations.filter(d => !d.clause?.includes('Rule 7') && !d.clause?.includes('Rule 9')).length || declarations.length} Compliant
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {(declarations.filter(d => !d.clause?.includes('Rule 7') && !d.clause?.includes('Rule 9')).length > 0
+                ? declarations.filter(d => !d.clause?.includes('Rule 7') && !d.clause?.includes('Rule 9'))
+                : declarations
+              ).map((decl, idx) => {
+                const st = getStatusBadge(decl.status);
+                return (
+                  <div key={idx} className="p-3.5 rounded-lg border border-gray-200 bg-gray-50/50 space-y-2 hover:bg-white transition-colors">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-700 shrink-0">
+                          {decl.clause}
+                        </span>
+                        <h4 className="text-xs font-bold text-gray-900 truncate" title={decl.name}>{decl.name}</h4>
+                      </div>
+                      <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded uppercase shrink-0 ${st.badge}`}>
+                        {decl.status}
                       </span>
-                      <h4 className="text-xs font-bold text-gray-900">{decl.name}</h4>
                     </div>
-                    <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded uppercase ${st.badge}`}>
-                      {decl.status}
-                    </span>
-                  </div>
 
-                  <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
-                    <div className="text-[10px] font-medium text-gray-400 uppercase">Detected Value</div>
-                    <div className="text-xs font-mono font-semibold text-gray-800 truncate">
-                      {decl.found_value || <span className="text-gray-400 font-normal italic">Not Found</span>}
+                    <div className="p-2 rounded bg-white border border-gray-200/80">
+                      <div className="text-[9px] font-medium text-gray-400 uppercase">Detected Value</div>
+                      <div className="text-xs font-mono font-semibold text-gray-800 truncate" title={decl.found_value}>
+                        {decl.found_value || <span className="text-gray-400 font-normal italic">Not Found</span>}
+                      </div>
                     </div>
+
+                    <p className="text-[11px] text-gray-600 leading-relaxed">{decl.explanation}</p>
                   </div>
-
-                  <p className="text-xs text-gray-600 leading-snug">{decl.explanation}</p>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
 
-        </div>
-      )}
+          {/* Height (mm) Box: Font Size Legibility & Prominence (Rule 7 & 9) */}
+          {renderFontHeightBox()}
 
-      {/* --- TAB 2: Deep Extraction Search Breakdown --- */}
-      {activeTab === 'search' && (
-        <div className="space-y-4">
-          <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-2">
-            <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-              Deep Contextual Extraction Search Breakdown
-            </h3>
-            <p className="text-xs text-gray-500">
-              Specialized search extractors covering Consumer Care, Manufacturer GIDC details, FSSAI licenses,
-              multilingual labels (Gujarati & Hindi), and variable date/batch strips.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            
-            {/* 1. Consumer Care Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-blue-50 text-blue-600 font-bold text-xs">📞</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">Consumer Care Extraction Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.consumer_care ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                  {classified.consumer_care ? 'FOUND' : 'MISSING'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">Toll-Free / Phone:</span> <span className="font-mono">{deepSearch.consumer_care?.toll_free || deepSearch.consumer_care?.phone || 'Not isolated'}</span></div>
-                <div><span className="font-semibold text-gray-500">Email Contact:</span> <span className="font-mono">{deepSearch.consumer_care?.email || 'Not isolated'}</span></div>
-                <div><span className="font-semibold text-gray-500">Executive / Cell:</span> {deepSearch.consumer_care?.officer_title || 'Customer Care Cell'}</div>
-                <div className="pt-1 text-[11px] text-gray-600 border-t border-gray-200 mt-1">
-                  <span className="font-semibold">Raw Text:</span> {classified.consumer_care?.raw_text || 'None'}
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Manufacturer Details Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-amber-50 text-amber-600 font-bold text-xs">🏭</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">Manufacturer Details Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.manufacturer_details ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                  {classified.manufacturer_details ? 'FOUND' : 'MISSING'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">Company:</span> {deepSearch.manufacturer?.company_name || 'Declared Entity'}</div>
-                <div><span className="font-semibold text-gray-500">PIN Code:</span> <span className="font-mono font-bold">{deepSearch.manufacturer?.pin_code || 'None'}</span></div>
-                <div className="pt-1 text-[11px] text-gray-600 border-t border-gray-200 mt-1">
-                  <span className="font-semibold">Complete Address:</span> {classified.manufacturer_details?.raw_text || 'None'}
-                </div>
-              </div>
-            </div>
-
-            {/* 3. FSSAI License Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-emerald-50 text-emerald-600 font-bold text-xs">🛡️</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">FSSAI License Extraction Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.fssai_number?.license_number ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                  {classified.fssai_number?.license_number ? '14-DIGIT VERIFIED' : 'NOT FOUND'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">License Number:</span> <span className="font-mono font-bold text-emerald-700">{classified.fssai_number?.license_number || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Barcode Cross-Check:</span> {barcodeAnalysis.fssai_cross_check?.status || 'NOT_CHECKED'}</div>
-              </div>
-            </div>
-
-            {/* 4. Mfg & Expiry Date Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-purple-50 text-purple-600 font-bold text-xs">📅</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">Mfg & Expiry Date Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.mfg_date ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                  {classified.mfg_date ? 'FOUND' : 'MISSING'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">Mfg / Packing Date:</span> <span className="font-mono font-bold">{classified.mfg_date?.extracted_date || classified.mfg_date?.raw_text || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Expiry / Best Before:</span> <span className="font-mono font-bold">{classified.expiry_date?.extracted_date || classified.expiry_date?.raw_text || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Batch / Lot Code:</span> <span className="font-mono">{deepSearch.dates?.batch_number || classified.batch_number || 'None'}</span></div>
-              </div>
-            </div>
-
-            {/* 5. MRP & Net Quantity Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-teal-50 text-teal-600 font-bold text-xs">₹</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">MRP & Unit Sale Price Context Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.mrp ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                  {classified.mrp ? 'FOUND' : 'MISSING'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">Maximum Retail Price:</span> <span className="font-mono font-bold text-gray-900">{classified.mrp?.formatted_value || classified.mrp?.raw_text || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Unit Sale Price (USP):</span> <span className="font-mono font-bold text-emerald-700">{classified.unit_sale_price || deepSearch.mrp?.usp || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Tax Clause Included:</span> {classified.mrp?.has_tax_clause ? '✓ Yes (Incl. of all taxes)' : '⚠️ Not Explicit'}</div>
-              </div>
-            </div>
-
-            {/* 6. Net Quantity Context Search Card */}
-            <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-1 rounded bg-indigo-50 text-indigo-600 font-bold text-xs">⚖️</span>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase">Net Quantity Context Search</h4>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${classified.net_quantity ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                  {classified.net_quantity ? 'FOUND' : 'MISSING'}
-                </span>
-              </div>
-              <div className="space-y-1.5 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                <div><span className="font-semibold text-gray-500">Declared Quantity:</span> <span className="font-mono font-bold">{classified.net_quantity?.formatted_value || classified.net_quantity?.raw_text || 'None'}</span></div>
-                <div><span className="font-semibold text-gray-500">Standard Unit:</span> {classified.net_quantity?.unit ? `✓ Standard (${classified.net_quantity.unit})` : 'None'}</div>
-              </div>
-            </div>
-
-          </div>
         </div>
       )}
 
@@ -563,7 +546,6 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                       {overlayBlocks.map((block) => {
                         const isSelected = selectedBlock === block.id;
                         const r = block.rect || { x: 0, y: 0, width: 50, height: 20 };
-                        const isVert = block.is_vertical;
                         return (
                           <g key={block.id} className="pointer-events-auto cursor-pointer" onClick={() => setSelectedBlock(block.id)}>
                             <rect
@@ -571,8 +553,8 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                               y={r.y}
                               width={r.width}
                               height={r.height}
-                              fill={isSelected ? 'rgba(37, 99, 235, 0.25)' : (isVert ? 'rgba(168, 85, 247, 0.2)' : 'rgba(16, 185, 129, 0.15)')}
-                              stroke={isSelected ? '#2563eb' : (isVert ? '#a855f7' : '#10b981')}
+                              fill={isSelected ? 'rgba(37, 99, 235, 0.25)' : 'rgba(16, 185, 129, 0.15)'}
+                              stroke={isSelected ? '#2563eb' : '#10b981'}
                               strokeWidth={Math.max(2, Math.round(overlayMeta.width / 400))}
                               rx="2"
                             />
@@ -596,7 +578,6 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                     <tr>
                       <th className="py-2 px-3">#</th>
                       <th className="py-2 px-3">Text</th>
-                      <th className="py-2 px-3">Tag</th>
                       <th className="py-2 px-3 text-right">Conf</th>
                     </tr>
                   </thead>
@@ -608,19 +589,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                         className={`cursor-pointer ${selectedBlock === block.id ? 'bg-blue-50 font-semibold text-blue-900' : 'hover:bg-white'}`}
                       >
                         <td className="py-1.5 px-3 font-mono text-gray-400">#{block.id}</td>
-                        <td className="py-1.5 px-3 text-gray-900 truncate max-w-[180px]">{block.text}</td>
-                        <td className="py-1.5 px-3">
-                          {block.is_vertical && (
-                            <span className="text-[9px] bg-purple-100 text-purple-800 px-1 rounded font-bold mr-1">
-                              ↕ VERT
-                            </span>
-                          )}
-                          {block.lang && block.lang !== 'en' && (
-                            <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1 rounded font-bold uppercase">
-                              {block.lang}
-                            </span>
-                          )}
-                        </td>
+                        <td className="py-1.5 px-3 text-gray-900 truncate max-w-[240px]">{block.text}</td>
                         <td className="py-1.5 px-3 text-right font-mono text-gray-600">
                           {(block.confidence * 100).toFixed(0)}%
                         </td>

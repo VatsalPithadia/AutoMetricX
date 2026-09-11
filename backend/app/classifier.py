@@ -489,12 +489,13 @@ class FieldClassifier:
         logger.info(f"Identified {len(recipe_block_ids)} recipe/instruction blocks to exclude from field matching")
 
         full_text_lines = [b["text"].strip() for b in valid_blocks if b.get("text")]
-        full_raw_str = " ".join(full_text_lines)
-        has_global_tax_clause = bool(self.tax_clause_pattern.search(full_raw_str))
+        full_raw_str = "\n".join(full_text_lines)
+        tax_str_flat = " ".join(full_text_lines)
+        has_global_tax_clause = bool(self.tax_clause_pattern.search(tax_str_flat))
         # Bug 5: Also fuzzy-match tax clause across full text to catch OCR variants
         if not has_global_tax_clause and HAS_RAPIDFUZZ:
             tax_targets = ["inclusive of all taxes", "inclusive all taxes", "incl all taxes", "all taxes inclusive"]
-            has_global_tax_clause = fuzzy_match_any(full_raw_str, tax_targets, min_score=75.0)
+            has_global_tax_clause = fuzzy_match_any(tax_str_flat, tax_targets, min_score=75.0)
 
         # --- Pass 1: FSSAI License Number ---
         for block in valid_blocks:
@@ -868,6 +869,10 @@ class FieldClassifier:
             if any(kw in upper_text for kw in ['CUSTOMER', 'CONSUMER', 'CARE', 'HELPLINE', 'TOLL FREE', 'E-MAIL', 'EMAIL', 'FEEDBACK']):
                 continue
 
+            # Exclude allergen warnings and facility disclaimer statements
+            if any(kw in upper_text for kw in ['FACILITY THAT', 'FACILITYTHAT', 'ALLERGEN', 'MAY CONTAIN', 'PROCESSES THESE', 'PROCESSESTHESE', 'DRODUCTMANUFACTURED', 'PRODUCT MANUFACTURED']):
+                continue
+
             # Skip batch/date headers and coder stamps
             if any(kw in upper_text for kw in ['PACKED ON', 'USE BY', 'BEST BEFORE', 'LOT NO', 'BATCH NO', 'NET WT', 'NET QUANTITY']):
                 continue
@@ -879,10 +884,18 @@ class FieldClassifier:
             if y_pos < 120 and not any(kw in upper_text for kw in ['MFD', 'MFG', 'PACKED BY', 'MANUFACTURED']):
                 continue
 
-            is_anchor = fuzzy_match_any(text, mfg_anchors, min_score=80.0) or any(kw in upper_text.replace(" ", "") for kw in ['INDIALTD', 'PVTLTD', 'LIMITED', 'MFDBY', 'MFGBY', 'PACKEDBY', 'PKDBY'])
-            is_address = any(re.search(r'\b' + term + r'\b', upper_text) for term in mfg_address_words)
+            clean_t = text.strip()
+            if len(clean_t) < 3:
+                continue
 
-            if is_anchor or (mfg_parts and is_address and last_mfg_y is not None and abs(y_pos - last_mfg_y) < 140.0):
+            is_company_entity = bool(re.search(r'\b[A-Za-z]*(?:LTD|LIMITED|PVT|FOODS|INDUSTRIES|ENTERPRISES|PRODUCTS|DAIRY|AGRO|PHARMA)\b', upper_text))
+            is_anchor = (
+                (len(clean_t) >= 4 and fuzzy_match_any(clean_t, mfg_anchors, min_score=80.0))
+                or any(kw in upper_text.replace(" ", "") for kw in ['INDIALTD', 'PVTLTD', 'LIMITED', 'FOODSLTD', 'AGROLTD', 'MFDBY', 'MFGBY', 'PACKEDBY', 'PKDBY', 'MANUFACTURED&PACKEDBY'])
+            )
+            is_address = any(re.search(r'\b' + term + r'\b', upper_text) for term in mfg_address_words) or bool(re.search(r'\b(?:PIN|PINCODE)\b|\b[1-8]\d{5}\b', upper_text))
+
+            if is_anchor or (mfg_parts and (is_company_entity or is_address) and last_mfg_y is not None and abs(y_pos - last_mfg_y) < 160.0):
                 mfg_parts.append(text)
                 mfg_blocks.append(block)
                 if b_id is not None:

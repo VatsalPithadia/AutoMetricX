@@ -99,7 +99,11 @@ export default function App() {
   // Build primary preview URL — first selected image preview, or uploaded file URL
   const primaryPreviewUrl = selectedImages.length > 0
     ? selectedImages[0].previewUrl
-    : (ocrResult?.saved_file ? `${API_BASE_URL}/uploads/${ocrResult.saved_file}` : null);
+    : (ocrResult?.saved_file
+        ? `${API_BASE_URL}/uploads/${ocrResult.saved_file}`
+        : (ocrResult?.image_filename
+            ? `${API_BASE_URL}/uploads/${ocrResult.image_filename}`
+            : (ocrResult?.filename ? `${API_BASE_URL}/uploads/${ocrResult.filename}` : null)));
 
   // Build all side preview URLs for multi-side display
   const sidePreviewUrls = selectedImages.length > 1

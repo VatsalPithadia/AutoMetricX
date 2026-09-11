@@ -192,6 +192,78 @@ class FontCalibrator:
         else:
             return 6.0, "Tier > 500g/ml (Min 6.0mm)"
 
+    def determine_product_category(self, classified_fields: Dict[str, Any], blocks: List[Dict[str, Any]]) -> str:
+        """
+        Determines product category (Food, Beverages, Spices, Bakery, Personal Care, General Commodity)
+        from commodity name, FSSAI presence, and detected packaging keywords.
+        """
+        comm_obj = classified_fields.get("commodity_name") or {}
+        comm_text = ((comm_obj.get("clean_name") or comm_obj.get("raw_text") or "") if isinstance(comm_obj, dict) else "").upper()
+        
+        fssai_obj = classified_fields.get("fssai_number") or {}
+        has_fssai = bool(isinstance(fssai_obj, dict) and (fssai_obj.get("license_number") or fssai_obj.get("raw_text")))
+        
+        all_text = " ".join([b.get("text", "") for b in blocks[:40]]).upper()
+        combined = f"{comm_text} {all_text}"
+
+        if any(w in combined for w in ["TEA", "CHAI", "COFFEE", "JUICE", "BEVERAGE", "DRINK", "SODA", "WATER", "MILK"]):
+            return "Beverages & Drinks"
+        if any(w in combined for w in ["BISCUIT", "COOKIE", "RUSK", "BREAD", "CAKE", "BAKERY", "WAFER"]):
+            return "Bakery & Biscuits"
+        if any(w in combined for w in ["MASALA", "SPICE", "CHILLI", "TURMERIC", "CORIANDER", "POWDER", "SEASONING"]):
+            return "Spices & Condiments"
+        if any(w in combined for w in ["CHIPS", "NAMKEEN", "SNACK", "BHUJIA", "KURKURE", "NOODLE", "PASTA"]):
+            return "Snacks & Packaged Food"
+        if any(w in combined for w in ["SOAP", "SHAMPOO", "CREAM", "LOTION", "DETERGENT", "CLEANER", "COSMETIC", "TOOTHPASTE"]):
+            return "Cosmetics & Household Care"
+        if has_fssai or any(w in combined for w in ["FOOD", "EDIBLE", "OIL", "GHEE", "ATTA", "RICE", "DAL", "SUGAR", "SALT"]):
+            return "Food & Groceries"
+        return "Packaged Consumer Commodity"
+
+    def get_statutory_tiers_table(self, active_min_mm: float) -> List[Dict[str, Any]]:
+        """
+        Returns official Legal Metrology (Packaged Commodities) Rules, 2011 Table-1 tiers
+        specifying statutory minimum numeral & letter heights based on Net Weight / Volume.
+        """
+        return [
+            {
+                "tier_id": "tier_1",
+                "tier_name": "Tier 1: Up to 50 g / mL",
+                "weight_range": "≤ 50 g / ml",
+                "min_font_height_mm": 1.0,
+                "min_embossed_height_mm": 2.0,
+                "is_active": active_min_mm <= 1.0,
+                "applicability": "Small sachets, spice pouches, confectionery"
+            },
+            {
+                "tier_id": "tier_2",
+                "tier_name": "Tier 2: 50 g to 200 g / mL",
+                "weight_range": "> 50 g to 200 g / ml",
+                "min_font_height_mm": 2.0,
+                "min_embossed_height_mm": 4.0,
+                "is_active": 1.0 < active_min_mm <= 2.0,
+                "applicability": "Medium packets, biscuit packs, snack pouches"
+            },
+            {
+                "tier_id": "tier_3",
+                "tier_name": "Tier 3: 200 g to 500 g / mL",
+                "weight_range": "> 200 g to 500 g / ml",
+                "min_font_height_mm": 4.0,
+                "min_embossed_height_mm": 6.0,
+                "is_active": 2.0 < active_min_mm <= 4.0,
+                "applicability": "Standard cartons, bottles, food boxes"
+            },
+            {
+                "tier_id": "tier_4",
+                "tier_name": "Tier 4: Above 500 g / mL",
+                "weight_range": "> 500 g / ml",
+                "min_font_height_mm": 6.0,
+                "min_embossed_height_mm": 6.0,
+                "is_active": active_min_mm > 4.0,
+                "applicability": "Large bulk packs, 1kg+ bags, edible oil cans"
+            }
+        ]
+
     def analyze_legibility_and_prominence(
         self,
         image: Optional[np.ndarray],
@@ -205,6 +277,7 @@ class FontCalibrator:
         2. Letter height calculation (mm) for all declarations
         3. Rule 7(3) letter height tier check
         4. Rule 9(1) MRP prominence ratio check
+        5. Product category and statutory requirement matrix
         """
         scale_px_mm, scale_source = self.estimate_px_to_mm_scale(image, metadata, blocks)
 
@@ -269,12 +342,25 @@ class FontCalibrator:
             "explanation": f"MRP font size ({mrp_h_mm or 0}mm) is {prominence_ratio}x body text ({avg_body_mm}mm). {'Compliant with Rule 9(1)' if is_mrp_prominent else 'MRP should be larger than surrounding text'}"
         }
 
+        # Product Category & Declared Weight Details
+        product_cat = self.determine_product_category(classified_fields, blocks)
+        statutory_tiers = self.get_statutory_tiers_table(min_required_mm)
+        net_qty_obj = classified_fields.get("net_quantity") or {}
+        net_qty_val = (
+            net_qty_obj.get("formatted_value") or 
+            net_qty_obj.get("raw_text") or 
+            (f"{net_qty_obj.get('numeric_value', '')} {net_qty_obj.get('unit', '')}".strip() if net_qty_obj.get('numeric_value') else None)
+        ) if isinstance(net_qty_obj, dict) else None
+
         return {
             "scale_px_mm": round(scale_px_mm, 2),
             "scale_calibration_source": scale_source,
+            "product_category": product_cat,
+            "declared_net_quantity": net_qty_val,
             "rule_7_3_tier": tier_label,
             "min_required_letter_height_mm": min_required_mm,
             "field_font_heights_mm": fields_font_mm,
             "rule_7_3_field_evaluations": rule_7_3_results,
-            "rule_9_1_mrp_prominence": rule_9_1_report
+            "rule_9_1_mrp_prominence": rule_9_1_report,
+            "statutory_tiers": statutory_tiers
         }

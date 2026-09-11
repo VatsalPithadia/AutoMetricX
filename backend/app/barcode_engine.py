@@ -20,7 +20,8 @@ class BarcodeQREngine:
     """
 
     def __init__(self):
-        self.has_zxing = False
+        self.has_zxing: bool = False
+        self.zxing: Optional[Any] = None
         try:
             import zxingcpp
             self.zxing = zxingcpp
@@ -279,12 +280,13 @@ class BarcodeQREngine:
                 logger.debug(f"OpenCV Aruco detector skipped: {aruco_err}")
 
         # PASS 4: Rotation checks for angled / skewed packaging if still no QR code found
-        if not any(r["type"] == "QRCODE" for r in results) and self.has_zxing:
+        if not any(r["type"] == "QRCODE" for r in results) and self.has_zxing and self.zxing is not None:
+            zxing_engine = self.zxing
             for angle in [90, 180, 270]:
                 rot_code = cv2.ROTATE_90_CLOCKWISE if angle == 90 else (cv2.ROTATE_180 if angle == 180 else cv2.ROTATE_90_COUNTERCLOCKWISE)
                 rot_img = cv2.rotate(image, rot_code)
                 try:
-                    barcodes = self.zxing.read_barcodes(rot_img)
+                    barcodes = zxing_engine.read_barcodes(rot_img)
                     for b in barcodes:
                         txt = b.text.strip() if b.text else ""
                         if not txt or txt in seen_data:

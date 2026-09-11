@@ -1,7 +1,7 @@
 {
-  "timestamp": 1789030448.4945998,
-  "total_test_images": 10,
-  "total_detected_blocks": 285,
+  "timestamp": 1789068170.7133799,
+  "total_test_images": 11,
+  "total_detected_blocks": 568,
   "total_suspicious_matches": 1,
   "images": [
     {
@@ -9,22 +9,27 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1500x1100",
       "original_size": "1500x1100",
-      "total_detected_blocks": 7,
-      "high_conf_blocks": 7,
+      "total_detected_blocks": 15,
+      "high_conf_blocks": 15,
       "low_conf_blocks": 0,
-      "confident_declarations": 5,
+      "confident_declarations": 6,
       "overall_status": "PARTIALLY_COMPLIANT",
-      "compliance_score": 72.2,
+      "compliance_score": 83.3,
       "suspicious_flags": [],
-      "processing_time_sec": 7.89,
+      "processing_time_sec": 8.96,
       "classified_fields": {
-        "mrp": "MRP Rs.30.00 (lncl.ofall taxes)",
+        "mrp": "MRPRs.30.00(lncl.ofalltaxes)",
         "mfg_date": "PKD:DEC2025",
         "expiry_date": "EXP:JUN2026",
-        "manufacturer_details": "Manufactured by: GoldenBakery Pvt Ltd, Industrial Area,Thane -400604",
-        "consumer_care": "For Feedback Contact: 022-25801234 | care@goldenbakery.in",
+        "manufacturer_details": "Manufactured by: Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604",
+        "consumer_care": "For Feedback Contact: 022-25801234Icare@goldenbakery.in For Feedback Contact: 022-25801234 I care@goldenbakery.in FSSAI Lic.No.11518014000890 FSSAI Lic. No. 11518014000890",
         "fssai_number": "11518014000890",
-        "unclassified_blocks_count": 1
+        "commodity_name": "MRP Rs. 30.00 (Incl. of all taxes)",
+        "unclassified_blocks_count": 6,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -39,11 +44,15 @@
       "overall_status": "NON_COMPLIANT",
       "compliance_score": 44.4,
       "suspicious_flags": [],
-      "processing_time_sec": 8.53,
+      "processing_time_sec": 5.82,
       "classified_fields": {
         "net_quantity": "Net Wt: 120 g",
         "commodity_name": "Generic Name: Biscuits with Almonds",
-        "unclassified_blocks_count": 3
+        "unclassified_blocks_count": 3,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -57,20 +66,22 @@
       "confident_declarations": 7,
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 88.9,
-      "suspicious_flags": [
-        "Field overlap: 'mfg_date' and 'mrp' both claimed 'MRP Rs. 30.00 (lncl.of all taxes)'"
-      ],
-      "processing_time_sec": 9.4,
+      "suspicious_flags": [],
+      "processing_time_sec": 3.07,
       "classified_fields": {
-        "mrp": "MRP Rs. 30.00 (lncl.of all taxes)",
+        "mrp": "MRP Rs. 30.00 (lncl. of all taxes)",
         "net_quantity": "Net Wt: 120 g",
-        "mfg_date": "MRP Rs. 30.00 (lncl.of all taxes)",
-        "expiry_date": "EXP:JUN2026",
+        "mfg_date": "PKD:DEC2025",
+        "expiry_date": "EXP: JUN 2026",
         "manufacturer_details": "Manufactured by: Golden Bakery Pvt Ltd, Industrial Area, Thane - 400604",
-        "consumer_care": "ForFeedback Contact:022-25801234| care@goldenbakery.in",
+        "consumer_care": "For Feedback Contact: 022-25801234 Icare@goldenbakery.in",
         "fssai_number": "11518014000890",
         "commodity_name": "GenericName:BiscuitswithAlmonds",
-        "unclassified_blocks_count": 3
+        "unclassified_blocks_count": 2,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -78,21 +89,26 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1200x1600",
       "original_size": "3060x4080",
-      "total_detected_blocks": 66,
-      "high_conf_blocks": 63,
-      "low_conf_blocks": 3,
+      "total_detected_blocks": 112,
+      "high_conf_blocks": 102,
+      "low_conf_blocks": 10,
       "confident_declarations": 4,
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 72.2,
       "suspicious_flags": [],
-      "processing_time_sec": 25.76,
+      "processing_time_sec": 15.54,
       "classified_fields": {
-        "mfg_date": "\uff081\uff09Ta5gtatlndcilagu",
-        "manufacturer_details": "Manufactured &Packed By: Godhra Road,At Pratappura HALOL-389 350(Dist:Panchmahal) Gujarat INDIA",
-        "consumer_care": "CUSTOMERCARE NO.:9409200015 E-mail:info@shriharimasala.com",
+        "mfg_date": "BNO.02 01-05-26 50g35/-",
+        "manufacturer_details": "Manufactured&PackedBy: HALOL389350(Dist:Panchmahal)GujaratINDIA HALOL-389350(Dist:Panchmahal)GujaratINDIA Manufactured&PackedBy Manufactured&Packed By: HALOL-389350\uff08Dist:Panchmanal)GujaratINDIA",
+        "consumer_care": "CUSTOMERCARENO.:9409200015 E-mail:info@shriharimasala.com CUSTOMERCARE NO.:9409200015",
         "fssai_number": "10715016000063",
-        "commodity_name": "SHRI HARI MASALA",
-        "unclassified_blocks_count": 59
+        "commodity_name": "PASTE,DHANA-JEERA,EDIBLECOTTONSEEDOILSPICESANDCONDIMENTS.",
+        "unclassified_blocks_count": 101,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ],
+        "batch_number": "02"
       }
     },
     {
@@ -100,21 +116,24 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1600x1200",
       "original_size": "4080x3060",
-      "total_detected_blocks": 31,
-      "high_conf_blocks": 23,
-      "low_conf_blocks": 8,
+      "total_detected_blocks": 61,
+      "high_conf_blocks": 40,
+      "low_conf_blocks": 21,
       "confident_declarations": 4,
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 66.7,
       "suspicious_flags": [],
-      "processing_time_sec": 17.36,
+      "processing_time_sec": 11.7,
       "classified_fields": {
-        "mfg_date": "5-",
-        "manufacturer_details": "Pa OTHER",
-        "consumer_care": "consumer.2.co@gsk.com GSK Consumer Relations,",
-        "fssai_number": "1901571006861",
-        "commodity_name": "AYURVEDICPROPRIETARYMEDICINE",
-        "unclassified_blocks_count": 24
+        "mfg_date": "-LM-ER-05-08-25-SOP",
+        "manufacturer_details": "TeksalbatfilisttSelan.HP.-173205.ML-WP-58-Ay(LLMaufacturedFors OTHER Manutactured",
+        "consumer_care": "consumer.2.co@gsk.com P GSK Consumer Relations,",
+        "commodity_name": "hif1;Reg.No-PR-10-JAM-05-AAACF01091-13",
+        "unclassified_blocks_count": 53,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -122,21 +141,56 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1200x1600",
       "original_size": "3060x4080",
-      "total_detected_blocks": 59,
-      "high_conf_blocks": 54,
-      "low_conf_blocks": 5,
-      "confident_declarations": 4,
+      "total_detected_blocks": 100,
+      "high_conf_blocks": 81,
+      "low_conf_blocks": 19,
+      "confident_declarations": 5,
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 72.2,
       "suspicious_flags": [],
-      "processing_time_sec": 23.83,
+      "processing_time_sec": 11.49,
       "classified_fields": {
-        "mfg_date": "1-05-26 50g",
-        "manufacturer_details": "Manufactured&Packed By:",
-        "consumer_care": "E-mail:info@shriharimasala.com CUSTOMER CARE NO.:94092 00015",
+        "mfg_date": "201-05-26 50g35/-",
+        "expiry_date": "30-4-27",
+        "manufacturer_details": "Manufactured&PackedBy Manufactured&Packed By:",
+        "consumer_care": "E-mail:info@shriharimasala.com CUSTOMERCARENO.:9409200015 CUSTOMERCARE NO.:9409200015",
         "fssai_number": "10715016000063",
         "commodity_name": "SHRI HARI MASALA",
-        "unclassified_blocks_count": 53
+        "unclassified_blocks_count": 88,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ],
+        "batch_number": "02"
+      }
+    },
+    {
+      "filename": "paneer_tikka_masala.jpg",
+      "engine": "RapidOCR (PaddleOCR ONNX)",
+      "image_size": "768x1024",
+      "original_size": "768x1024",
+      "total_detected_blocks": 155,
+      "high_conf_blocks": 122,
+      "low_conf_blocks": 33,
+      "confident_declarations": 6,
+      "overall_status": "PARTIALLY_COMPLIANT",
+      "compliance_score": 83.3,
+      "suspicious_flags": [],
+      "processing_time_sec": 12.4,
+      "classified_fields": {
+        "net_quantity": "Net wt.:50g",
+        "mfg_date": "F29G1 29/07/26 28-07/27",
+        "expiry_date": "BEST BEFORE12MONTHSFROM DATEOF PACKAGING",
+        "manufacturer_details": "ManufacturedPackedby:PRAVINMASALEWALE Satara,Maharashtra45526,india Dist.Pune4124Maharashtra,IndiaLic.No.1001202200014 ManuacturedakdyRAVINMASALEWALE Dist.Pun424,aharahtraIndi ManuareakeRAVAALEWAE Satara,Maharashtra45526,ndia",
+        "consumer_care": "p FORCONSUMERCARECEL/COMPLAINTSCTACCONSUMERCAEFFCERAABOME Lic.No.100120200014 Lic.No.115240390004",
+        "fssai_number": "11524039000041",
+        "commodity_name": "milk",
+        "unclassified_blocks_count": 133,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ],
+        "batch_number": "Use"
       }
     },
     {
@@ -144,21 +198,27 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1200x1600",
       "original_size": "3060x4080",
-      "total_detected_blocks": 87,
-      "high_conf_blocks": 83,
-      "low_conf_blocks": 4,
-      "confident_declarations": 4,
+      "total_detected_blocks": 89,
+      "high_conf_blocks": 79,
+      "low_conf_blocks": 10,
+      "confident_declarations": 5,
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 72.2,
       "suspicious_flags": [],
-      "processing_time_sec": 17.41,
+      "processing_time_sec": 6.65,
       "classified_fields": {
-        "mfg_date": "CONTAINSPRMITECLASSIIPRESERVATIVE(11\uff09",
-        "manufacturer_details": "O Manufactured &Packed by: AVEER FOODS LTD",
-        "consumer_care": "Suhana Do not buy/consume puffedpack suhanacare@suhana.co.in",
+        "mfg_date": "C25J05E 0CT.2025 SEP.202623.00",
+        "expiry_date": "consume within 2months",
+        "manufacturer_details": "Manufactured&Packedby: AVEER FOODSLTD Pin 412801(INDIA)",
+        "consumer_care": "Suhana O Donot buy/consumepuffedpack suhanacare@suhana.co.in",
         "fssai_number": "11522997000170",
-        "commodity_name": "Soya Sauce",
-        "unclassified_blocks_count": 79
+        "commodity_name": "Dark Soy Sauce.",
+        "unclassified_blocks_count": 79,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ],
+        "batch_number": "Use"
       }
     },
     {
@@ -171,18 +231,24 @@
       "low_conf_blocks": 0,
       "confident_declarations": 6,
       "overall_status": "PARTIALLY_COMPLIANT",
-      "compliance_score": 83.3,
-      "suspicious_flags": [],
-      "processing_time_sec": 11.06,
+      "compliance_score": 77.8,
+      "suspicious_flags": [
+        "commodity_name matched batch/product code: 'ASSAMROYALTEA-MANDATORYDECLARATIONS'"
+      ],
+      "processing_time_sec": 3.73,
       "classified_fields": {
-        "mrp": "MRP Rs. 185.00 (Incl. of all taxes)",
+        "mrp": "MRP Rs. 185.00 (lncl. of all taxes)",
         "mfg_date": "MfgDate:NOV2025",
         "expiry_date": "ExpiryDate:OCT2026",
-        "manufacturer_details": "Mfd &Pkd By:Royal Tea EstatesPvt Ltd, Tea Garden Road,Jorhat,Assam-785001",
-        "consumer_care": "CustomerCare:1800-123-4567|email:care@royaltea.com",
+        "manufacturer_details": "Mfd & Pkd By:Royal Tea Estates Pvt Ltd, TeaGardenRoad,Jorhat,Assam-785001",
+        "consumer_care": "CustomerCare:1800-123-45671email:care@royaltea.com",
         "fssai_number": "10321012000456",
-        "commodity_name": "ASSAM ROYALTEA-MANDATORYDECLARATIONS",
-        "unclassified_blocks_count": 1
+        "commodity_name": "ASSAMROYALTEA-MANDATORYDECLARATIONS",
+        "unclassified_blocks_count": 1,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -190,18 +256,22 @@
       "engine": "RapidOCR (PaddleOCR ONNX)",
       "image_size": "1200x1400",
       "original_size": "1200x1400",
-      "total_detected_blocks": 4,
-      "high_conf_blocks": 4,
+      "total_detected_blocks": 5,
+      "high_conf_blocks": 5,
       "low_conf_blocks": 0,
       "confident_declarations": 2,
       "overall_status": "NON_COMPLIANT",
       "compliance_score": 38.9,
       "suspicious_flags": [],
-      "processing_time_sec": 4.93,
+      "processing_time_sec": 6.29,
       "classified_fields": {
         "net_quantity": "Net Quantity: 250 g",
         "commodity_name": "Generic Commodity: Premium Black Tea",
-        "unclassified_blocks_count": 3
+        "unclassified_blocks_count": 4,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     },
     {
@@ -216,17 +286,21 @@
       "overall_status": "PARTIALLY_COMPLIANT",
       "compliance_score": 88.9,
       "suspicious_flags": [],
-      "processing_time_sec": 8.58,
+      "processing_time_sec": 2.97,
       "classified_fields": {
         "mrp": "MRP Rs. 185.00 (lncl. of all taxes)",
         "net_quantity": "Net Quantity: 250 g",
         "mfg_date": "MfgDate:NOV2025",
-        "expiry_date": "ExpiryDate: OCT 2026",
-        "manufacturer_details": "Mfd &Pkd By:Royal Tea Estates Pvt Ltd,",
-        "consumer_care": "Customer Care: 1800-123-4567|email: care@royaltea.c0m",
+        "expiry_date": "Expiry Date: OCT 2026",
+        "manufacturer_details": "Mfd & Pkd By: Royal Tea Estates Pvt Ltd, Tea Garden Road, Jorhat, Assam - 785001",
+        "consumer_care": "Customer Care:1800-123-45671email: care@royaltea.com",
         "fssai_number": "10321012000456",
-        "commodity_name": "Generic Commodity:Premium Black Tea",
-        "unclassified_blocks_count": 3
+        "commodity_name": "Generic Commodity: Premium Black Tea",
+        "unclassified_blocks_count": 2,
+        "deep_search_details": null,
+        "detected_languages": [
+          "English"
+        ]
       }
     }
   ]

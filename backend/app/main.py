@@ -11,9 +11,10 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+import shutil
 
 logger = logging.getLogger("metrolens.main")
 
@@ -50,22 +51,50 @@ _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
     "http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,https://footwear-dime-squatted.ngrok-free.dev"
 )
-_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+ALLOWED_ORIGINS = [origin.strip() for origin in _raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
-RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules", "lmpc_rules.json")
+BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
+ROOT_DIR = os.path.dirname(BACKEND_DIR)
+UPLOAD_DIR = os.path.join(BACKEND_DIR, "uploads")
+TEST_IMAGES_DIR = os.path.join(ROOT_DIR, "test_images")
+RULES_PATH = os.path.join(BACKEND_DIR, "rules", "lmpc_rules.json")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# Synchronize test_images into UPLOAD_DIR on startup so existing files are always available
+if os.path.exists(TEST_IMAGES_DIR):
+    for fname in os.listdir(TEST_IMAGES_DIR):
+        src = os.path.join(TEST_IMAGES_DIR, fname)
+        dst = os.path.join(UPLOAD_DIR, fname)
+        if os.path.isfile(src) and not os.path.exists(dst):
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                logger.warning(f"Could not copy test image {fname} to uploads: {e}")
+
+@app.get("/uploads/{file_path:path}")
+def get_uploaded_file(file_path: str):
+    """
+    Serves uploaded or test image files with fallback between UPLOAD_DIR and TEST_IMAGES_DIR.
+    """
+    target = os.path.join(UPLOAD_DIR, file_path)
+    if os.path.exists(target) and os.path.isfile(target):
+        return FileResponse(target)
+    
+    test_target = os.path.join(TEST_IMAGES_DIR, file_path)
+    if os.path.exists(test_target) and os.path.isfile(test_target):
+        return FileResponse(test_target)
+        
+    raise HTTPException(status_code=404, detail=f"Image file '{file_path}' not found")
 
 # Initialize engines
 classifier_engine = FieldClassifier(min_confidence=0.40)

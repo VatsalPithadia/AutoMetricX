@@ -42,6 +42,14 @@ def test_history_and_pdf_features():
             print(f"Skipping missing file: {fpath}")
             continue
 
+        # Ensure file is in uploads directory
+        backend_uploads = os.path.join(os.path.dirname(__file__), "uploads")
+        os.makedirs(backend_uploads, exist_ok=True)
+        dst_fpath = os.path.join(backend_uploads, fname)
+        if not os.path.exists(dst_fpath):
+            import shutil
+            shutil.copy2(fpath, dst_fpath)
+
         with open(fpath, "rb") as img_f:
             img_bytes = img_f.read()
 
