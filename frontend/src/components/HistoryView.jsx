@@ -158,7 +158,7 @@ export default function HistoryView({ onSelectScan }) {
                   <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Product Name</th>
                   <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Date / Time</th>
                   <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">LMPC Status</th>
-                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Ingredients Safety</th>
+                  <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Ingredient Screener</th>
                   <th className="py-3 px-4 text-xs uppercase tracking-wider font-bold">Score</th>
                   <th className="py-3 px-4 text-right text-xs uppercase tracking-wider font-bold">Actions</th>
                 </tr>
@@ -194,11 +194,11 @@ export default function HistoryView({ onSelectScan }) {
                             ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
                             : scan.ingredient_verdict === 'CAUTION'
                             ? 'bg-amber-100 text-amber-800 border-amber-200'
-                            : 'bg-rose-100 text-rose-800 border-rose-200'
+                            : 'bg-amber-100 text-amber-900 border-amber-300'
                         }`}>
-                          {scan.ingredient_verdict === 'SAFE' && '✓ SAFE'}
+                          {scan.ingredient_verdict === 'SAFE' && '✓ NO FLAGS'}
                           {scan.ingredient_verdict === 'CAUTION' && '⚠️ CAUTION'}
-                          {scan.ingredient_verdict === 'HARMFUL' && '⚠️ HARMFUL'}
+                          {scan.ingredient_verdict === 'HARMFUL' && '⚠️ FLAGGED'}
                           {scan.ingredient_score != null && ` (${scan.ingredient_score})`}
                         </span>
                       ) : (

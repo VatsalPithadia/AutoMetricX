@@ -256,15 +256,154 @@ def transform_rotated_point(pt: List[float], angle: int, W_orig: int, H_orig: in
         return [round(float(W_orig - y_rot), 1), round(float(x_rot), 1)]
     return [round(float(x_rot), 1), round(float(y_rot), 1)]
 
+def compute_block_iou(r1: Dict[str, Any], r2: Dict[str, Any]) -> float:
+    """Computes Intersection over Union between two bounding boxes."""
+    x1 = max(r1.get("x", 0.0), r2.get("x", 0.0))
+    y1 = max(r1.get("y", 0.0), r2.get("y", 0.0))
+    x2 = min(r1.get("x", 0.0) + r1.get("width", 0.0), r2.get("x", 0.0) + r2.get("width", 0.0))
+    y2 = min(r1.get("y", 0.0) + r1.get("height", 0.0), r2.get("y", 0.0) + r2.get("height", 0.0))
+    inter_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if inter_area <= 0.0:
+        return 0.0
+    area1 = r1.get("width", 0.0) * r1.get("height", 0.0)
+    area2 = r2.get("width", 0.0) * r2.get("height", 0.0)
+    union_area = area1 + area2 - inter_area
+    return inter_area / union_area if union_area > 0 else 0.0
+
+def deduplicate_ocr_blocks(blocks: List[Dict[str, Any]], iou_thresh: float = 0.35, center_dist_thresh: float = 22.0) -> List[Dict[str, Any]]:
+    """
+    Deduplicates overlapping detections between sliding-window tiles or passes,
+    preserving the detection with higher confidence.
+    """
+    sorted_blocks = sorted(blocks, key=lambda b: b.get("confidence", 0.0), reverse=True)
+    deduped: List[Dict[str, Any]] = []
+
+    for b in sorted_blocks:
+        r1 = b.get("rect", {})
+        cx1 = r1.get("x", 0.0) + r1.get("width", 0.0) / 2.0
+        cy1 = r1.get("y", 0.0) + r1.get("height", 0.0) / 2.0
+        clean1 = re.sub(r'[^A-Z0-9]', '', b.get("text", "").upper())
+
+        is_dup = False
+        for kept in deduped:
+            r2 = kept.get("rect", {})
+            cx2 = r2.get("x", 0.0) + r2.get("width", 0.0) / 2.0
+            cy2 = r2.get("y", 0.0) + r2.get("height", 0.0) / 2.0
+            clean2 = re.sub(r'[^A-Z0-9]', '', kept.get("text", "").upper())
+
+            iou = compute_block_iou(r1, r2)
+            dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
+
+            if iou >= iou_thresh or (dist <= center_dist_thresh and (clean1 == clean2 or clean1 in clean2 or clean2 in clean1)):
+                is_dup = True
+                break
+
+        if not is_dup:
+            deduped.append(b)
+
+    for idx, b in enumerate(deduped, 1):
+        b["id"] = idx
+    return deduped
+
+def extract_sliding_window_tiles(
+    img: np.ndarray,
+    rapid_engine=None,
+    tile_mode: str = "statutory"
+) -> List[Dict[str, Any]]:
+    """
+    Sliding-Window Tile Upscaling for Micro-Text:
+    Divides high-resolution packaging into overlapping tiles upscaled individually (1.4x)
+    with bicubic interpolation + CLAHE contrast enhancement to give micro-text sub-12px
+    declarations more effective pixels without exceeding the RapidOCR max_side_len ceiling.
+    """
+    if rapid_engine is None:
+        return []
+
+    import time
+    H, W = img.shape[:2]
+    upscale_factor = 1.40
+    
+    # 2 targeted statutory tiles (lower 60% left and right) with 16% horizontal overlap:
+    # Keeps tile widths < 1000px so RapidOCR (max_side_len=1600) does not downscale,
+    # giving sub-12px micro-text 40% more resolution while completing in ~12-15s.
+    tw = int(W * 0.58)
+    y_stat = int(H * 0.38)
+    
+    tiles_coords = [
+        (0, y_stat, tw, H - y_stat),          # Lower-Left
+        (W - tw, y_stat, tw, H - y_stat),     # Lower-Right
+    ]
+    if tile_mode == "full":
+        th = int(H * 0.58)
+        tiles_coords.extend([
+            (0, 0, tw, th),                  # Top-Left
+            (W - tw, 0, tw, th)              # Top-Right
+        ])
+
+    tile_blocks: List[Dict[str, Any]] = []
+    t_start = time.time()
+
+    for tx, ty, w_t, h_t in tiles_coords:
+        tile = img[ty:ty+h_t, tx:tx+w_t]
+        if tile.size == 0:
+            continue
+
+        tile_up = cv2.resize(tile, (0, 0), fx=upscale_factor, fy=upscale_factor, interpolation=cv2.INTER_CUBIC)
+        gray_tile = cv2.cvtColor(tile_up, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        tile_enh = cv2.cvtColor(clahe.apply(gray_tile), cv2.COLOR_GRAY2BGR)
+
+        res, _ = rapid_engine(tile_enh)
+        if res:
+            for item in res:
+                bbox = item[0]
+                text = item[1] if len(item) < 3 else item[1]
+                conf = item[2] if len(item) >= 3 else item[1][1]
+                text_str = str(text).strip()
+                if not text_str:
+                    continue
+
+                orig_bbox = [
+                    [round((float(p[0]) / upscale_factor) + tx, 1),
+                     round((float(p[1]) / upscale_factor) + ty, 1)]
+                    for p in bbox
+                ]
+                xs = [p[0] for p in orig_bbox]
+                ys = [p[1] for p in orig_bbox]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                w_px = round(max_x - min_x, 2)
+                h_px = round(max_y - min_y, 2)
+
+                tile_blocks.append({
+                    "id": len(tile_blocks) + 1,
+                    "text": text_str,
+                    "confidence": round(float(conf), 4),
+                    "bbox": orig_bbox,
+                    "rect": {"x": round(float(min_x), 1), "y": round(float(min_y), 1), "width": w_px, "height": h_px},
+                    "height_px": h_px,
+                    "width_px": w_px,
+                    "angle": 0,
+                    "is_vertical": False,
+                    "from_tile": True
+                })
+
+    elapsed = time.time() - t_start
+    logger.info(f"Sliding-window tiling pass ({len(tiles_coords)} tiles) completed in {elapsed:.2f}s, extracted {len(tile_blocks)} raw detections")
+    return tile_blocks
+
 def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True) -> Dict[str, Any]:
     """
     High-Speed & High-Recall Multi-Angle OCR Execution Function.
     Runs RapidOCR (PaddleOCR ONNX Runtime) at 1600px resolution with CLAHE contrast enhancement:
     - Primary 0° pass for fast extraction
+    - Sliding-Window Tile Upscaling for dense small/micro-text
     - Robust 90° & 270° rotation passes for vertical/rotated text on side margins, seams, and stamps
     - Vertical stacked character stitcher
     - Multilingual script analysis (English, Gujarati, Hindi)
     """
+    import time
+    start_total_ocr = time.time()
     img, meta = preprocess_image(image_bytes, max_dimension=1600, apply_clahe=True)
     H_orig, W_orig = meta["height"], meta["width"]
     
@@ -313,13 +452,43 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
                     existing_texts.add(text_str.upper())
                     block_id += 1
 
+            # Sliding-Window Tile Upscaling for Micro-Text:
+            # Dense sachets and curved bottles have sub-12px micro-text declarations (Net Qty, MRP, dates, ingredients)
+            # that get blurred or dropped when the image is downscaled to 1600px.
+            # We trigger tiling when the image has high original resolution (orig >= 2400px)
+            # or when small text is prevalent and key declarations need discovery.
+            is_dense_small_text_likely = (
+                max(meta.get("original_width", 0), meta.get("original_height", 0)) >= 2400
+            )
+
+            if is_dense_small_text_likely and rapid_engine is not None:
+                t0_tile = time.time()
+                tiled_blocks = extract_sliding_window_tiles(
+                    img,
+                    rapid_engine=rapid_engine,
+                    tile_mode="statutory"
+                )
+                t_tiling = time.time() - t0_tile
+                if t_tiling > 20.0:
+                    logger.warning(f"Sliding-window tiling latency check: {t_tiling:.2f}s exceeded 20s budget")
+
+                if tiled_blocks:
+                    # Deduplicate overlapping detections between adjacent tiles and primary pass
+                    blocks = deduplicate_ocr_blocks(blocks + tiled_blocks, iou_thresh=0.35, center_dist_thresh=22.0)
+                    existing_texts = {b["text"].upper() for b in blocks}
+                    block_id = len(blocks) + 1
+
             # Multi-Angle Rotation Pass (90° CW & 270° CCW):
             # Critical for vertical text printed on packaging seams, gussets, side margins, and vertical format dates/MRP.
             # Runs whenever:
             # 1. Any vertical text blocks were suspected/detected in 0° pass (is_vertical is True)
             # 2. Or enable_multi_angle is True and any key declaration is missing or unverified
             # 3. Or total detected blocks < 8
-            has_vertical_blocks = any(b.get("is_vertical", False) for b in blocks)
+            has_vertical_blocks = any(
+                b.get("is_stitched_vertical", False) or 
+                (b.get("is_vertical", False) and len(b.get("text", "").strip()) >= 4)
+                for b in blocks
+            )
             all_text_concat = " ".join([b["text"].upper() for b in blocks])
             has_mrp = any(kw in all_text_concat for kw in ["MRP", "RS", "₹", "PRICE", "MAX", "મ.ચી.ભા", "અ.ખુ.મૂ"])
             has_qty = any(kw in all_text_concat for kw in ["NET", "QTY", "WEIGHT", "WT", "VOL", "50G", "100G", "250G", "1KG", "500G", "G", "KG", "ML", "L", "વજન", "માત્રા"])
@@ -329,8 +498,8 @@ def extract_text_from_image(image_bytes: bytes, enable_multi_angle: bool = True)
 
             needs_rotation_pass = enable_multi_angle and (
                 has_vertical_blocks or
-                not (has_mrp and has_qty and has_mfg and has_mfg_addr and has_care) or
-                len(blocks) < 5
+                (len(blocks) < 5) or
+                (not is_dense_small_text_likely and not (has_mrp and has_qty and has_mfg and has_mfg_addr and has_care))
             )
 
             if needs_rotation_pass:

@@ -341,11 +341,11 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                       ? 'bg-rose-600 text-white'
                       : 'bg-gray-200 text-gray-700'
                   }`}
-                  title="Click to view Ingredient Safety report"
+                  title="Informational Ingredient Flag — Not a Certified Safety Assessment"
                 >
-                  {ingredientSafety.safety_verdict === 'SAFE' && '✓ SAFE TO CONSUME'}
-                  {ingredientSafety.safety_verdict === 'CAUTION' && '⚠️ INGREDIENT CAUTION'}
-                  {ingredientSafety.safety_verdict === 'HARMFUL' && '⚠️ HARMFUL INGREDIENTS'}
+                  {ingredientSafety.safety_verdict === 'SAFE' && '✓ NO RESTRICTED ADDITIVES (ADVISORY)'}
+                  {ingredientSafety.safety_verdict === 'CAUTION' && '⚠️ INGREDIENT CAUTION (ADVISORY)'}
+                  {ingredientSafety.safety_verdict === 'HARMFUL' && '⚠️ FLAGGED ADDITIVES (ADVISORY)'}
                   {ingredientSafety.safety_verdict === 'NOT_DETECTED' && 'Ingredients: Not Detected'}
                   {ingredientSafety.safety_score != null && ingredientSafety.safety_verdict !== 'NOT_DETECTED' && (
                     <span className="opacity-90 font-mono text-xs">({ingredientSafety.safety_score}/100)</span>
@@ -401,10 +401,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${activeTab === 'ingredients' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
               }`}
           >
-            <span>Ingredient Safety & Health</span>
+            <span>Ingredient Screener (Advisory)</span>
             {ingredientSafety?.safety_verdict === 'HARMFUL' && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-rose-500 text-white animate-pulse">
-                HARMFUL
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-amber-500 text-white animate-pulse">
+                FLAGGED
               </span>
             )}
             {ingredientSafety?.safety_verdict === 'CAUTION' && (
@@ -414,7 +414,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             )}
             {ingredientSafety?.safety_verdict === 'SAFE' && (
               <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-emerald-600 text-white">
-                SAFE
+                NO FLAGS
               </span>
             )}
           </button>
@@ -665,20 +665,23 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                       ? 'bg-emerald-600'
                       : 'bg-gray-500'
                   }`}>
-                    {ingredientSafety?.safety_verdict === 'HARMFUL' && '⚠️ HARMFUL PRODUCT DETECTED'}
-                    {ingredientSafety?.safety_verdict === 'CAUTION' && '⚠️ MODERATE INGREDIENT CAUTION'}
-                    {ingredientSafety?.safety_verdict === 'SAFE' && '✓ SAFE TO CONSUME'}
+                    {ingredientSafety?.safety_verdict === 'HARMFUL' && '⚠️ FLAGGED ADDITIVES DETECTED (ADVISORY)'}
+                    {ingredientSafety?.safety_verdict === 'CAUTION' && '⚠️ INGREDIENT CAUTION (ADVISORY)'}
+                    {ingredientSafety?.safety_verdict === 'SAFE' && '✓ NO RESTRICTED ADDITIVES (ADVISORY)'}
                     {ingredientSafety?.safety_verdict === 'NOT_DETECTED' && 'Ingredients Not Isolated'}
                   </span>
                   {ingredientSafety?.is_harmful && (
-                    <span className="text-xs font-bold px-2.5 py-1 rounded bg-rose-100 text-rose-800 border border-rose-300">
-                      High Health Hazard
+                    <span className="text-xs font-bold px-2.5 py-1 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                      Regulated Substance Advisory
                     </span>
                   )}
                 </div>
                 <h3 className="text-lg font-bold text-gray-900">
-                  Toxicological & Dietary Ingredient Health Check
+                  Informational Ingredient Flag — Not a Certified Safety Assessment
                 </h3>
+                <div className="p-2.5 rounded-lg bg-white/80 border border-black/5 text-xs text-gray-600 leading-relaxed max-w-3xl">
+                  <b>Advisory Disclaimer:</b> This informational screening cross-references detected ingredients and INS additive codes against published FSSAI regulations, Codex Alimentarius (CXS 192-1995), and WHO/IARC guidance. It is provided for consumer awareness only and does <u>not</u> constitute a certified clinical, toxicological, or statutory food safety assessment.
+                </div>
                 <p className="text-sm text-gray-700 leading-relaxed max-w-2xl">
                   {ingredientSafety?.summary || 'No ingredients detected on the label photo.'}
                 </p>
@@ -687,7 +690,7 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
               {/* Score Meter */}
               <div className="flex items-center gap-3.5 bg-white/90 px-4.5 py-3.5 rounded-xl border border-black/5 shadow-2xs shrink-0">
                 <div className="text-center">
-                  <div className="text-xs text-gray-500 font-bold uppercase tracking-wider">Safety Score</div>
+                  <div className="text-xs text-gray-500 font-bold uppercase tracking-wider">Informational Index</div>
                   <div className={`text-3xl font-black font-mono leading-none mt-0.5 ${
                     ingredientSafety?.safety_score >= 75
                       ? 'text-emerald-600'
@@ -720,15 +723,15 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                 <div className="text-xl font-bold text-gray-900 mt-1">{ingredientSafety?.total_ingredients_count || 0}</div>
               </div>
               <div className="p-3 rounded-lg bg-white/80 border border-black/5">
-                <div className="text-xs text-rose-600 font-bold uppercase">High-Risk Harmful</div>
-                <div className="text-xl font-bold text-rose-700 mt-1">{ingredientSafety?.harmful_count || 0}</div>
+                <div className="text-xs text-amber-600 font-bold uppercase">Flagged Additives</div>
+                <div className="text-xl font-bold text-amber-700 mt-1">{ingredientSafety?.harmful_count || 0}</div>
               </div>
               <div className="p-3 rounded-lg bg-white/80 border border-black/5">
                 <div className="text-xs text-amber-600 font-bold uppercase">Moderate Caution</div>
                 <div className="text-xl font-bold text-amber-700 mt-1">{ingredientSafety?.caution_count || 0}</div>
               </div>
               <div className="p-3 rounded-lg bg-white/80 border border-black/5">
-                <div className="text-xs text-emerald-600 font-bold uppercase">Clean / Wholesome</div>
+                <div className="text-xs text-emerald-600 font-bold uppercase">Standard Permitted</div>
                 <div className="text-xl font-bold text-emerald-700 mt-1">{ingredientSafety?.safe_count || 0}</div>
               </div>
             </div>
@@ -739,20 +742,20 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
             <div className="bg-white border border-rose-200 rounded-xl p-5 space-y-4 shadow-sm">
               <div className="flex items-center justify-between pb-3.5 border-b border-gray-100">
                 <div className="flex items-center gap-2.5">
-                  <span className="p-1.5 rounded-lg bg-rose-600 text-white font-bold text-xs uppercase tracking-wider">
-                    HAZARDS
+                  <span className="p-1.5 rounded-lg bg-amber-600 text-white font-bold text-xs uppercase tracking-wider">
+                    ADVISORY
                   </span>
                   <div>
                     <h3 className="text-base font-bold text-gray-900">
-                      Identified Harmful Additives & Substances ({ingredientSafety.flagged_ingredients.length})
+                      Flagged Additives & Regulated Substances ({ingredientSafety.flagged_ingredients.length})
                     </h3>
                     <p className="text-sm text-gray-500">
-                      Scientific toxicology risk assessment and regulatory bans/restrictions
+                      Advisory cross-reference against FSSAI, Codex Alimentarius, and WHO/IARC registers
                     </p>
                   </div>
                 </div>
-                <span className="text-xs font-bold px-3 py-1 rounded-md bg-rose-50 text-rose-700 border border-rose-200">
-                  ⚠️ Action Required
+                <span className="text-xs font-bold px-3 py-1 rounded-md bg-amber-50 text-amber-800 border border-amber-200">
+                  Advisory Notice
                 </span>
               </div>
 
@@ -850,10 +853,10 @@ export default function OCRResultView({ result, imagePreviewUrl, sidePreviewUrls
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wider">
-                      All Detected Ingredients & Safety Evaluation ({allIngredientRows.length})
+                      All Detected Ingredients & Advisory Screening ({allIngredientRows.length})
                     </h4>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Individual compliance breakdown: pass, warning, and failure status with safety findings
+                      Informational breakdown cross-referenced against FSSAI permitted additives and allergen registers
                     </p>
                   </div>
 

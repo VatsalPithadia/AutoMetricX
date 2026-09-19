@@ -650,6 +650,15 @@ class IngredientSafetyEngine:
             "is_harmful": is_harmful,
             "safety_verdict": verdict,
             "safety_score": score,
+            "feature_title": "Informational Ingredient Flag — Not a Certified Safety Assessment",
+            "disclaimer": "Informational Ingredient Flag — Not a Certified Safety Assessment. This screening cross-references detected ingredients against published FSSAI regulations, Codex Alimentarius (GSFA CXS 192-1995), and WHO/IARC monographs. It is provided for informational consumer awareness only and does not constitute a certified medical, toxicological, or regulatory safety audit.",
+            "authoritative_sources": [
+                "FSSAI Food Safety & Standards (Food Products Standards & Food Additives) Regulations, 2011/2020",
+                "Codex Alimentarius General Standard for Food Additives (Codex STAN 192-1995 / CXS 192-1995)",
+                "WHO / International Agency for Research on Cancer (IARC) Monographs on Carcinogenicity",
+                "WHO REPLACE Trans-Fat Elimination Action Framework",
+                "European Food Safety Authority (EFSA) Scientific Opinions on Food Additives"
+            ],
             "summary": summary,
             "harmful_count": high_count,
             "caution_count": mod_count,
@@ -668,6 +677,13 @@ class IngredientSafetyEngine:
             "is_harmful": False,
             "safety_verdict": "NOT_DETECTED",
             "safety_score": 0,
+            "feature_title": "Informational Ingredient Flag — Not a Certified Safety Assessment",
+            "disclaimer": "Informational Ingredient Flag — Not a Certified Safety Assessment. This screening cross-references detected ingredients against published FSSAI regulations, Codex Alimentarius, and WHO/IARC guidance. It does not constitute a certified safety assessment.",
+            "authoritative_sources": [
+                "FSSAI Food Safety & Standards Regulations (2011/2020)",
+                "Codex Alimentarius (CXS 192-1995)",
+                "WHO / IARC Monographs"
+            ],
             "summary": "No ingredients list could be detected on the scanned package label. Please ensure the ingredients panel is clearly visible or input ingredients manually.",
             "harmful_count": 0,
             "caution_count": 0,
@@ -693,20 +709,20 @@ class IngredientSafetyEngine:
             mod_names = [f["name"] for f in flagged if f["severity"] == "MODERATE"]
             notable = high_names or mod_names
             return (
-                f"⚠️ HIGH HEALTH RISK ({score}/100): {product_str} contains hazardous substances "
+                f"⚠️ FLAGGED ADDITIVES DETECTED (ADVISORY - Score: {score}/100): {product_str} contains restricted or cautionary substances "
                 f"({', '.join(notable[:3])}{' and others' if len(notable) > 3 else ''}) "
-                f"associated with adverse health effects, including cellular toxicity, cardiovascular strain, or carcinogenic risks."
+                f"listed under regulatory surveillance (FSSAI/IARC/EFSA) for cellular toxicity, cardiovascular strain, or potential carcinogenic risks. (Informational screening only — not a certified safety assessment)."
             )
         elif verdict == "CAUTION":
             mod_names = [f["name"] for f in flagged]
             return (
-                f"⚠️ MODERATE CONCERN ({score}/100): {product_str} contains additives "
-                f"({', '.join(mod_names[:3])}) that may cause adverse reactions in sensitive individuals, children, or with frequent consumption."
+                f"⚠️ INGREDIENT CAUTION (ADVISORY - Score: {score}/100): {product_str} contains regulated food additives "
+                f"({', '.join(mod_names[:3])}) that may warrant caution in sensitive individuals or children under FSSAI/Codex advisory thresholds."
             )
         else:
             allergen_note = f" Note: Contains recognized allergen(s): {', '.join(a['allergen'] for a in allergens)}." if allergens else ""
             return (
-                f"✅ SAFE TO CONSUME ({score}/100): {product_str} contains wholesome, natural ingredients with no banned chemical additives, synthetic azo dyes, or harmful industrial trans fats.{allergen_note}"
+                f"✓ NO RESTRICTED ADDITIVES DETECTED (ADVISORY - Score: {score}/100): {product_str} contains standard permitted food ingredients with no banned additives, synthetic azo colorants, or industrial trans fats detected against FSSAI/Codex advisory registers.{allergen_note}"
             )
 
     def _generate_recommendations(

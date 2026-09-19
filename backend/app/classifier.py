@@ -409,12 +409,12 @@ class FieldClassifier:
         # BUT: don't reject strings that look like valid date formats
         _month_abbrs = r'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|0CT|OCT|NOV|DEC'
         _looks_like_date = bool(
-            re.search(r'^(0[1-9]|[12][0-9]|3[01])[/\-](0[1-9]|1[0-2]|20[1-3][0-9])', text.strip()) or
-            re.search(r'^(0[1-9]|1[0-2])/(20[1-3][0-9])$', text.strip()) or
+            re.search(r'^(0?[1-9]|[12][0-9]|3[01])[/\-](0?[1-9]|1[0-2]|20[1-3][0-9])', text.strip()) or
+            re.search(r'^(0?[1-9]|1[0-2])/(20[1-3][0-9])$', text.strip()) or
             # Alphanumeric dates: JAN/2025, 25/JAN/25, 26AUG25 etc.
             re.search(rf'({_month_abbrs})', upper)
         )
-        if self.code_batch_pattern.match(upper) and not _looks_like_date and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD', 'DATE']):
+        if self.code_batch_pattern.match(upper) and not _looks_like_date and not any(kw in upper for kw in ['MFG', 'EXP', 'PKD', 'DATE', 'USE']):
             return None
 
         # --- Pattern 0: Standard / Fused DD/MM/YY or DD/MM/YYYY numeric date ---
@@ -1049,10 +1049,10 @@ class FieldClassifier:
                     nutrition_member_y.append(rect.get("y", 0.0) + rect.get("height", 0.0) / 2.0)
 
         if len(nutr_blocks) >= 2:
-            min_nx = min(b.get("rect", {}).get("x", 0.0) for b in nutr_blocks) - 20.0
-            max_nx = max(b.get("rect", {}).get("x", 0.0) + b.get("rect", {}).get("width", 0.0) for b in nutr_blocks) + 180.0
-            min_ny = min(b.get("rect", {}).get("y", 0.0) for b in nutr_blocks) - 25.0
-            max_ny = max(b.get("rect", {}).get("y", 0.0) + b.get("rect", {}).get("height", 0.0) for b in nutr_blocks) + 30.0
+            min_nx = min(b.get("rect", {}).get("x", 0.0) for b in nutr_blocks) - 10.0
+            max_nx = max(b.get("rect", {}).get("x", 0.0) + b.get("rect", {}).get("width", 0.0) for b in nutr_blocks) + 15.0
+            min_ny = min(b.get("rect", {}).get("y", 0.0) for b in nutr_blocks) - 10.0
+            max_ny = max(b.get("rect", {}).get("y", 0.0) + b.get("rect", {}).get("height", 0.0) for b in nutr_blocks) + 10.0
             nutrition_table_boxes.append((min_nx, min_ny, max_nx, max_ny))
 
         net_qty_candidates = []
@@ -1080,10 +1080,11 @@ class FieldClassifier:
                 for (nx0, ny0, nx1, ny1) in nutrition_table_boxes
             )
             near_nutrient_row = any(
-                abs(by_center - my) <= 25.0 and (nutrition_table_boxes and bx_center <= nutrition_table_boxes[0][2])
+                abs(by_center - my) <= 20.0 and (nutrition_table_boxes and bx_center <= nutrition_table_boxes[0][2])
                 for my in nutrition_member_y
             )
-            if in_nutrition_box or near_nutrient_row:
+            is_statutory_text = any(kw in upper_text for kw in ['USP', 'USE BY', 'USEBY', 'NET', 'WEIGHT', 'WT', '50G', '100G', '250G', '500G', '1KG', 'MRP', 'RS.', 'RS '])
+            if (in_nutrition_box or near_nutrient_row) and not is_statutory_text:
                 logger.info(f"Net qty spatial exclusion: block '{text[:30]}' is inside a nutrition table zone")
                 continue
 

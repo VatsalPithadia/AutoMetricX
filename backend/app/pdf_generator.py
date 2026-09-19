@@ -278,11 +278,18 @@ class LMPCPdfReportGenerator:
             story.append(Paragraph(f"<b>Rule 9(1) MRP Prominence Ratio:</b> {r9_p_ratio}x. {r9_expl}", self.body_style))
             story.append(Spacer(1, 10))
 
-        # Section 3: Ingredient Safety & Hazard Verification
+        # Section 3: Informational Ingredient Flag — Not a Certified Safety Assessment
         ing_safety = scan_result.get("ingredient_safety")
         if ing_safety and ing_safety.get("has_ingredients"):
-            story.append(Paragraph("3. Product Ingredient Safety & Hazard Verification", self.heading2_style))
+            story.append(Paragraph("3. Informational Ingredient Flag — Not a Certified Safety Assessment", self.heading2_style))
             
+            disclaimer_box = Paragraph(
+                "<b>ADVISORY NOTICE:</b> This screening is provided for consumer awareness only and cross-references detected additives against published FSSAI regulations, Codex Alimentarius (CXS 192-1995), and WHO/IARC lists. It does <u>not</u> constitute a certified medical, toxicological, or statutory food safety assessment.",
+                ParagraphStyle('IngDisclaimer', parent=self.body_style, fontSize=7.5, leading=10, textColor=colors.HexColor('#64748B'))
+            )
+            story.append(disclaimer_box)
+            story.append(Spacer(1, 4))
+
             verdict = ing_safety.get("safety_verdict", "SAFE")
             score_val = ing_safety.get("safety_score", 100)
             summary_txt = ing_safety.get("summary", "")
@@ -292,9 +299,9 @@ class LMPCPdfReportGenerator:
 
             ing_meta_data = [
                 [
-                    Paragraph(f"<b>Safety Verdict:</b> <font color='{v_fg.hexval()}'><b>{verdict}</b></font>", self.body_style),
-                    Paragraph(f"<b>Health Safety Score:</b> <b>{score_val} / 100</b>", self.body_style),
-                    Paragraph(f"<b>Total Ingredients:</b> {ing_safety.get('total_ingredients_count', 0)} ({ing_safety.get('harmful_count', 0)} Harmful, {ing_safety.get('caution_count', 0)} Caution)", self.body_style)
+                    Paragraph(f"<b>Screening Verdict:</b> <font color='{v_fg.hexval()}'><b>{verdict} (ADVISORY)</b></font>", self.body_style),
+                    Paragraph(f"<b>Informational Index:</b> <b>{score_val} / 100</b>", self.body_style),
+                    Paragraph(f"<b>Total Ingredients:</b> {ing_safety.get('total_ingredients_count', 0)} ({ing_safety.get('harmful_count', 0)} Flagged, {ing_safety.get('caution_count', 0)} Caution)", self.body_style)
                 ]
             ]
             ing_meta_table = Table(ing_meta_data, colWidths=[180, 160, 200])
@@ -306,14 +313,14 @@ class LMPCPdfReportGenerator:
             ]))
             story.append(ing_meta_table)
             story.append(Spacer(1, 4))
-            story.append(Paragraph(f"<b>Safety Summary:</b> {summary_txt}", self.body_style))
+            story.append(Paragraph(f"<b>Advisory Summary:</b> {summary_txt}", self.body_style))
             story.append(Spacer(1, 6))
 
             flagged = ing_safety.get("flagged_ingredients", [])
             if flagged:
                 ing_headers = [
-                    Paragraph("<b>Harmful Ingredient</b>", self.table_header_style),
-                    Paragraph("<b>Severity</b>", self.table_header_style),
+                    Paragraph("<b>Flagged Additive</b>", self.table_header_style),
+                    Paragraph("<b>Advisory Level</b>", self.table_header_style),
                     Paragraph("<b>Hazard Classification</b>", self.table_header_style),
                     Paragraph("<b>Regulatory Status & Health Impact</b>", self.table_header_style)
                 ]
